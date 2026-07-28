@@ -1,0 +1,3 @@
+# Copia este archivo como "local.properties" (sin .example) y pon tu ruta real del SDK.
+# Windows típico:
+sdk.dir=C:\\Users\\HP\\AppData\\Local\\Android\\Sdk
