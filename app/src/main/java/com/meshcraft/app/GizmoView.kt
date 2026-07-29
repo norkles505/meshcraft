@@ -18,26 +18,28 @@ class GizmoView @JvmOverloads constructor(
     var angleXProvider: () -> Float = { 0f }
     var angleYProvider: () -> Float = { 0f }
 
-    // Called with (targetAngleX, targetAngleY) when the user taps an axis circle.
-    var onAxisSelected: ((Float, Float) -> Unit)? = null
+    // Called with (targetAngleX, targetAngleY, axisChar) when the user taps an axis circle.
+    var onAxisSelected: ((Float, Float, Char) -> Unit)? = null
 
     // dir = axis direction, viewAngleX/viewAngleY = camera angles that look straight down this axis
     // (chosen so world Z also stays pointing up on screen, no unwanted flip).
+    // planeAxis = which world axis this view looks down (used to pick the matching reference grid).
     private data class Axis(
         val dir: FloatArray,
         val color: Int,
         val label: String?,
         val viewAngleX: Float,
-        val viewAngleY: Float
+        val viewAngleY: Float,
+        val planeAxis: Char
     )
 
     private val axes = listOf(
-        Axis(floatArrayOf(1f, 0f, 0f), Color.rgb(226, 61, 61), "X", 0f, -90f),
-        Axis(floatArrayOf(-1f, 0f, 0f), Color.rgb(226, 61, 61), null, 0f, 90f),
-        Axis(floatArrayOf(0f, 1f, 0f), Color.rgb(120, 210, 90), "Y", 0f, 180f),
-        Axis(floatArrayOf(0f, -1f, 0f), Color.rgb(120, 210, 90), null, 0f, 0f),
-        Axis(floatArrayOf(0f, 0f, 1f), Color.rgb(80, 150, 235), "Z", 90f, 0f),
-        Axis(floatArrayOf(0f, 0f, -1f), Color.rgb(80, 150, 235), null, -90f, 0f)
+        Axis(floatArrayOf(1f, 0f, 0f), Color.rgb(226, 61, 61), "X", 0f, -90f, 'X'),
+        Axis(floatArrayOf(-1f, 0f, 0f), Color.rgb(226, 61, 61), null, 0f, 90f, 'X'),
+        Axis(floatArrayOf(0f, 1f, 0f), Color.rgb(120, 210, 90), "Y", 0f, 180f, 'Y'),
+        Axis(floatArrayOf(0f, -1f, 0f), Color.rgb(120, 210, 90), null, 0f, 0f, 'Y'),
+        Axis(floatArrayOf(0f, 0f, 1f), Color.rgb(80, 150, 235), "Z", 90f, 0f, 'Z'),
+        Axis(floatArrayOf(0f, 0f, -1f), Color.rgb(80, 150, 235), null, -90f, 0f, 'Z')
     )
 
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -123,7 +125,7 @@ class GizmoView @JvmOverloads constructor(
                     dx * dx + dy * dy <= t.radius * t.radius * 1.4f
                 }
                 if (hit != null) {
-                    onAxisSelected?.invoke(hit.axis.viewAngleX, hit.axis.viewAngleY)
+                    onAxisSelected?.invoke(hit.axis.viewAngleX, hit.axis.viewAngleY, hit.axis.planeAxis)
                 }
                 return true
             }

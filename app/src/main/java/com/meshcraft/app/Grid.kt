@@ -5,8 +5,13 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
-// Blender-style ground grid: lies flat on the XY plane, Z is up.
-class Grid(private val size: Int = 10, private val spacing: Float = 1f, private val elevation: Float = 0f) {
+enum class GridPlane { XY, XZ, YZ }
+
+// Blender-style reference grid.
+// XY = ground plane (used for Top view and free orbiting).
+// XZ = a "wall" facing you in Front/Back (Y-axis) view.
+// YZ = a "wall" facing you in Right/Left (X-axis) view.
+class Grid(private val plane: GridPlane, private val size: Int = 10, private val spacing: Float = 1f) {
 
     private val vertexShaderCode = """
         uniform mat4 uMVPMatrix;
@@ -39,23 +44,46 @@ class Grid(private val size: Int = 10, private val spacing: Float = 1f, private 
         val gray = floatArrayOf(0.32f, 0.32f, 0.32f, 1f)
         val red = floatArrayOf(0.85f, 0.25f, 0.25f, 1f)
         val green = floatArrayOf(0.25f, 0.75f, 0.3f, 1f)
+        val blue = floatArrayOf(0.35f, 0.55f, 0.85f, 1f)
 
         val limit = size * spacing
 
-        // Lines running along X (the X axis itself, at Y=0, is red)
-        for (i in -size..size) {
-            val yPos = i * spacing
-            positions.addAll(listOf(-limit, yPos, elevation, limit, yPos, elevation))
-            val color = if (i == 0) red else gray
+        fun addLine(p1: FloatArray, p2: FloatArray, color: FloatArray) {
+            positions.addAll(listOf(p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]))
             repeat(2) { colors.addAll(color.toList()) }
         }
 
-        // Lines running along Y (the Y axis itself, at X=0, is green)
-        for (i in -size..size) {
-            val xPos = i * spacing
-            positions.addAll(listOf(xPos, -limit, elevation, xPos, limit, elevation))
-            val color = if (i == 0) green else gray
-            repeat(2) { colors.addAll(color.toList()) }
+        when (plane) {
+            GridPlane.XY -> {
+                for (i in -size..size) {
+                    val v = i * spacing
+                    addLine(floatArrayOf(-limit, v, 0f), floatArrayOf(limit, v, 0f), if (i == 0) red else gray)
+                }
+                for (i in -size..size) {
+                    val v = i * spacing
+                    addLine(floatArrayOf(v, -limit, 0f), floatArrayOf(v, limit, 0f), if (i == 0) green else gray)
+                }
+            }
+            GridPlane.XZ -> {
+                for (i in -size..size) {
+                    val v = i * spacing
+                    addLine(floatArrayOf(-limit, 0f, v), floatArrayOf(limit, 0f, v), if (i == 0) red else gray)
+                }
+                for (i in -size..size) {
+                    val v = i * spacing
+                    addLine(floatArrayOf(v, 0f, -limit), floatArrayOf(v, 0f, limit), if (i == 0) blue else gray)
+                }
+            }
+            GridPlane.YZ -> {
+                for (i in -size..size) {
+                    val v = i * spacing
+                    addLine(floatArrayOf(0f, -limit, v), floatArrayOf(0f, limit, v), if (i == 0) green else gray)
+                }
+                for (i in -size..size) {
+                    val v = i * spacing
+                    addLine(floatArrayOf(0f, v, -limit), floatArrayOf(0f, v, limit), if (i == 0) blue else gray)
+                }
+            }
         }
 
         vertexCount = positions.size / 3

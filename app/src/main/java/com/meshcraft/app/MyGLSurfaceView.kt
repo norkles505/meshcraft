@@ -29,6 +29,7 @@ class MyGLSurfaceView(context: Context) : GLSurfaceView(context) {
             renderer.angleY += dx * 0.5f
             renderer.angleX += dy * 0.5f
             renderer.isOrthographic = false
+            renderer.gridPlaneAxis = 'Z'
             requestRender()
             onRotationChanged?.invoke()
         }

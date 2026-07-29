@@ -21,7 +21,7 @@ class MainActivity : Activity() {
         gizmoView.angleXProvider = { glView.renderer.angleX }
         gizmoView.angleYProvider = { glView.renderer.angleY }
         glView.onRotationChanged = { gizmoView.invalidate() }
-        gizmoView.onAxisSelected = { targetX, targetY -> animateCameraTo(targetX, targetY) }
+        gizmoView.onAxisSelected = { targetX, targetY, axisChar -> animateCameraTo(targetX, targetY, axisChar) }
 
         val root = FrameLayout(this)
         root.addView(
@@ -44,9 +44,10 @@ class MainActivity : Activity() {
         setContentView(root)
     }
 
-    private fun animateCameraTo(targetAngleX: Float, targetAngleY: Float) {
+    private fun animateCameraTo(targetAngleX: Float, targetAngleY: Float, axisChar: Char) {
         val renderer = glView.renderer
         renderer.isOrthographic = true
+        renderer.gridPlaneAxis = axisChar
         val startX = renderer.angleX
         val startY = renderer.angleY
         val deltaX = shortestDelta(startX, targetAngleX)

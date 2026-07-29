@@ -9,7 +9,9 @@ import javax.microedition.khronos.opengles.GL10
 class MyGLRenderer : GLSurfaceView.Renderer {
 
     private lateinit var cube: Cube
-    private lateinit var grid: Grid
+    private lateinit var gridXY: Grid
+    private lateinit var gridXZ: Grid
+    private lateinit var gridYZ: Grid
 
     private val mvpMatrix = FloatArray(16)
     private val projectionMatrix = FloatArray(16)
@@ -27,11 +29,16 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     // Like Blender: axis-aligned gizmo views snap to orthographic; free orbiting uses perspective.
     @Volatile var isOrthographic = false
 
+    // Which axis the camera is currently looking down: 'Z' -> ground (XY) grid, 'Y' -> XZ wall, 'X' -> YZ wall.
+    @Volatile var gridPlaneAxis = 'Z'
+
     override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0.11f, 0.11f, 0.11f, 1f)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         cube = Cube()
-        grid = Grid()
+        gridXY = Grid(GridPlane.XY)
+        gridXZ = Grid(GridPlane.XZ)
+        gridYZ = Grid(GridPlane.YZ)
     }
 
     override fun onSurfaceChanged(unused: GL10?, width: Int, height: Int) {
@@ -63,6 +70,11 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         Matrix.multiplyMM(scratch, 0, viewMatrix, 0, rotationMatrix, 0)
         Matrix.multiplyMM(mvpMatrix, 0, projectionMatrix, 0, scratch, 0)
 
+        val grid = when (gridPlaneAxis) {
+            'X' -> gridYZ
+            'Y' -> gridXZ
+            else -> gridXY
+        }
         grid.draw(mvpMatrix)
         cube.draw(mvpMatrix)
     }
