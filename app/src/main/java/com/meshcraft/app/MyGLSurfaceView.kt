@@ -28,6 +28,7 @@ class MyGLSurfaceView(context: Context) : GLSurfaceView(context) {
             val dy = y - previousY
             renderer.angleY += dx * 0.5f
             renderer.angleX += dy * 0.5f
+            renderer.isOrthographic = false
             requestRender()
             onRotationChanged?.invoke()
         }

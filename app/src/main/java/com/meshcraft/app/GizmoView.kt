@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.util.AttributeSet
+import android.view.MotionEvent
 import android.view.View
 import kotlin.math.cos
 import kotlin.math.sin
@@ -17,15 +18,26 @@ class GizmoView @JvmOverloads constructor(
     var angleXProvider: () -> Float = { 0f }
     var angleYProvider: () -> Float = { 0f }
 
-    private data class Axis(val dir: FloatArray, val color: Int, val label: String?)
+    // Called with (targetAngleX, targetAngleY) when the user taps an axis circle.
+    var onAxisSelected: ((Float, Float) -> Unit)? = null
+
+    // dir = axis direction, viewAngleX/viewAngleY = camera angles that look straight down this axis
+    // (chosen so world Z also stays pointing up on screen, no unwanted flip).
+    private data class Axis(
+        val dir: FloatArray,
+        val color: Int,
+        val label: String?,
+        val viewAngleX: Float,
+        val viewAngleY: Float
+    )
 
     private val axes = listOf(
-        Axis(floatArrayOf(1f, 0f, 0f), Color.rgb(226, 61, 61), "X"),
-        Axis(floatArrayOf(-1f, 0f, 0f), Color.rgb(226, 61, 61), null),
-        Axis(floatArrayOf(0f, 1f, 0f), Color.rgb(120, 210, 90), "Y"),
-        Axis(floatArrayOf(0f, -1f, 0f), Color.rgb(120, 210, 90), null),
-        Axis(floatArrayOf(0f, 0f, 1f), Color.rgb(80, 150, 235), "Z"),
-        Axis(floatArrayOf(0f, 0f, -1f), Color.rgb(80, 150, 235), null)
+        Axis(floatArrayOf(1f, 0f, 0f), Color.rgb(226, 61, 61), "X", 0f, -90f),
+        Axis(floatArrayOf(-1f, 0f, 0f), Color.rgb(226, 61, 61), null, 0f, 90f),
+        Axis(floatArrayOf(0f, 1f, 0f), Color.rgb(120, 210, 90), "Y", 0f, 180f),
+        Axis(floatArrayOf(0f, -1f, 0f), Color.rgb(120, 210, 90), null, 0f, 0f),
+        Axis(floatArrayOf(0f, 0f, 1f), Color.rgb(80, 150, 235), "Z", 90f, 0f),
+        Axis(floatArrayOf(0f, 0f, -1f), Color.rgb(80, 150, 235), null, -90f, 0f)
     )
 
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -44,6 +56,9 @@ class GizmoView @JvmOverloads constructor(
     }
 
     private data class Projected(val x: Float, val y: Float, val z: Float, val axis: Axis)
+    private data class HitTarget(val x: Float, val y: Float, val radius: Float, val axis: Axis)
+
+    private var hitTargets: List<HitTarget> = emptyList()
 
     private val fullOpacity = 255
     private val dimOpacity = 178 // ~70%
@@ -61,13 +76,10 @@ class GizmoView @JvmOverloads constructor(
 
         val projected = axes.map { axis ->
             val (x, y, z) = rotate(axis.dir[0], axis.dir[1], axis.dir[2], angleXRad, angleYRad)
-            // Z is "up" (Blender-style), so it drives the vertical screen position.
-            // "z" here (from rotate's y-output) is depth toward/away from the camera.
             Projected(cx + x * radius, cy - z * radius, y, axis)
         }
 
         val frontMostDepth = projected.minOf { it.z }
-        // Draw farthest first, nearest last, so the nearest circle ends up on top.
         val drawOrder = projected.sortedByDescending { it.z }
 
         for (p in drawOrder) {
@@ -75,6 +87,8 @@ class GizmoView @JvmOverloads constructor(
                 canvas.drawLine(cx, cy, p.x, p.y, linePaint)
             }
         }
+
+        val newHitTargets = mutableListOf<HitTarget>()
 
         for (p in drawOrder) {
             val alpha = if (p.z == frontMostDepth) fullOpacity else dimOpacity
@@ -91,7 +105,30 @@ class GizmoView @JvmOverloads constructor(
                 val textY = p.y - (fm.ascent + fm.descent) / 2f
                 canvas.drawText(p.axis.label, p.x, textY, textPaint)
             }
+
+            newHitTargets.add(HitTarget(p.x, p.y, r, p.axis))
         }
+
+        // Nearest (topmost) circles were drawn last, so reverse for hit-priority.
+        hitTargets = newHitTargets.reversed()
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> return true
+            MotionEvent.ACTION_UP -> {
+                val hit = hitTargets.firstOrNull { t ->
+                    val dx = event.x - t.x
+                    val dy = event.y - t.y
+                    dx * dx + dy * dy <= t.radius * t.radius * 1.4f
+                }
+                if (hit != null) {
+                    onAxisSelected?.invoke(hit.axis.viewAngleX, hit.axis.viewAngleY)
+                }
+                return true
+            }
+        }
+        return false
     }
 
     // Applies the same rotation as the 3D scene: yaw around Z (angleY), then pitch around X (angleX).

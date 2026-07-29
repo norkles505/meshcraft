@@ -6,7 +6,7 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
 // Blender-style ground grid: lies flat on the XY plane, Z is up.
-class Grid(private val size: Int = 10, private val spacing: Float = 1f, private val elevation: Float = -0.9f) {
+class Grid(private val size: Int = 10, private val spacing: Float = 1f, private val elevation: Float = 0f) {
 
     private val vertexShaderCode = """
         uniform mat4 uMVPMatrix;

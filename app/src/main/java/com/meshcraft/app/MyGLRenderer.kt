@@ -17,9 +17,15 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     private val rotationMatrix = FloatArray(16)
     private val scratch = FloatArray(16)
 
+    private var viewportWidth = 1
+    private var viewportHeight = 1
+
     // angleX = pitch (rotates around world X). angleY = yaw (rotates around world Z, since Z is "up" here, like Blender).
     @Volatile var angleX = -25f
     @Volatile var angleY = -35f
+
+    // Like Blender: axis-aligned gizmo views snap to orthographic; free orbiting uses perspective.
+    @Volatile var isOrthographic = false
 
     override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0.11f, 0.11f, 0.11f, 1f)
@@ -30,15 +36,23 @@ class MyGLRenderer : GLSurfaceView.Renderer {
 
     override fun onSurfaceChanged(unused: GL10?, width: Int, height: Int) {
         GLES20.glViewport(0, 0, width, height)
-        val ratio = width.toFloat() / height.toFloat()
-        Matrix.frustumM(projectionMatrix, 0, -ratio, ratio, -1f, 1f, 2f, 30f)
+        viewportWidth = width
+        viewportHeight = height
     }
 
     override fun onDrawFrame(unused: GL10?) {
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
 
+        val ratio = viewportWidth.toFloat() / viewportHeight.toFloat()
+        if (isOrthographic) {
+            val orthoSize = 1.8f
+            Matrix.orthoM(projectionMatrix, 0, -orthoSize * ratio, orthoSize * ratio, -orthoSize, orthoSize, 0.1f, 30f)
+        } else {
+            Matrix.frustumM(projectionMatrix, 0, -ratio, ratio, -1f, 1f, 2f, 30f)
+        }
+
         // Camera looks along +Y with Z as the up direction (Blender-style Z-up).
-        Matrix.setLookAtM(viewMatrix, 0, 0f, -5f, 0f, 0f, 0f, 0f, 0f, 0f, 1f)
+        Matrix.setLookAtM(viewMatrix, 0, 0f, -6.5f, 0f, 0f, 0f, 0f, 0f, 0f, 1f)
 
         Matrix.setIdentityM(rotationMatrix, 0)
         Matrix.rotateM(rotationMatrix, 0, angleX, 1f, 0f, 0f)
