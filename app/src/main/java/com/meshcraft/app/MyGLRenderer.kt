@@ -32,6 +32,24 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     // Which axis the camera is currently looking down: 'Z' -> ground (XY) grid, 'Y' -> XZ wall, 'X' -> YZ wall.
     @Volatile var gridPlaneAxis = 'Z'
 
+    // Camera distance from the origin (zoom).
+    @Volatile var cameraDistance = 6.5f
+        set(value) {
+            field = value.coerceIn(2f, 20f)
+        }
+
+    // Pan offset: shifts the camera + its look-at target together, sideways on screen (world X / world Z).
+    @Volatile var panX = 0f
+    @Volatile var panZ = 0f
+
+    fun zoomIn() {
+        cameraDistance -= cameraDistance * 0.15f
+    }
+
+    fun zoomOut() {
+        cameraDistance += cameraDistance * 0.15f
+    }
+
     override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0.11f, 0.11f, 0.11f, 1f)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
@@ -52,16 +70,22 @@ class MyGLRenderer : GLSurfaceView.Renderer {
 
         val ratio = viewportWidth.toFloat() / viewportHeight.toFloat()
         if (isOrthographic) {
-            // Matches the apparent size of the perspective view at the same camera distance
-            // (distance * tan(halfFOV) = 6.5 * 0.5), so switching views doesn't feel like a zoom.
-            val orthoSize = 3.25f
+            // Matches the apparent size of the perspective view at the current camera distance
+            // (distance * tan(halfFOV) = distance * 0.5), so switching views doesn't feel like a zoom.
+            val orthoSize = cameraDistance * 0.5f
             Matrix.orthoM(projectionMatrix, 0, -orthoSize * ratio, orthoSize * ratio, -orthoSize, orthoSize, 0.1f, 30f)
         } else {
             Matrix.frustumM(projectionMatrix, 0, -ratio, ratio, -1f, 1f, 2f, 30f)
         }
 
         // Camera looks along +Y with Z as the up direction (Blender-style Z-up).
-        Matrix.setLookAtM(viewMatrix, 0, 0f, -6.5f, 0f, 0f, 0f, 0f, 0f, 0f, 1f)
+        // panX/panZ shift both eye and target together, so it pans without changing the viewing angle.
+        Matrix.setLookAtM(
+            viewMatrix, 0,
+            panX, -cameraDistance, panZ,
+            panX, 0f, panZ,
+            0f, 0f, 1f
+        )
 
         Matrix.setIdentityM(rotationMatrix, 0)
         Matrix.rotateM(rotationMatrix, 0, angleX, 1f, 0f, 0f)
