@@ -37,11 +37,6 @@ class GizmoView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
-    private val circleStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 2.5f
-    }
-
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
@@ -49,6 +44,9 @@ class GizmoView @JvmOverloads constructor(
     }
 
     private data class Projected(val x: Float, val y: Float, val z: Float, val axis: Axis)
+
+    private val fullOpacity = 255
+    private val dimOpacity = 178 // ~70%
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -64,26 +62,34 @@ class GizmoView @JvmOverloads constructor(
         val projected = axes.map { axis ->
             val (x, y, z) = rotate(axis.dir[0], axis.dir[1], axis.dir[2], angleXRad, angleYRad)
             // Z is "up" (Blender-style), so it drives the vertical screen position.
+            // "z" here (from rotate's y-output) is depth toward/away from the camera.
             Projected(cx + x * radius, cy - z * radius, y, axis)
-        }.sortedBy { it.z }
+        }
 
-        for (p in projected) {
+        val frontMostDepth = projected.minOf { it.z }
+        // Draw farthest first, nearest last, so the nearest circle ends up on top.
+        val drawOrder = projected.sortedByDescending { it.z }
+
+        for (p in drawOrder) {
             if (p.axis.label != null) {
                 canvas.drawLine(cx, cy, p.x, p.y, linePaint)
             }
         }
 
-        for (p in projected) {
+        for (p in drawOrder) {
+            val alpha = if (p.z == frontMostDepth) fullOpacity else dimOpacity
+            val r = if (p.axis.label != null) circleRadius else circleRadius * 0.8f
+
+            circleFillPaint.color = p.axis.color
+            circleFillPaint.alpha = alpha
+            canvas.drawCircle(p.x, p.y, r, circleFillPaint)
+
             if (p.axis.label != null) {
-                circleFillPaint.color = p.axis.color
-                canvas.drawCircle(p.x, p.y, circleRadius, circleFillPaint)
+                textPaint.alpha = alpha
                 textPaint.textSize = circleRadius * 1.15f
                 val fm = textPaint.fontMetrics
                 val textY = p.y - (fm.ascent + fm.descent) / 2f
                 canvas.drawText(p.axis.label, p.x, textY, textPaint)
-            } else {
-                circleStrokePaint.color = p.axis.color
-                canvas.drawCircle(p.x, p.y, circleRadius * 0.8f, circleStrokePaint)
             }
         }
     }

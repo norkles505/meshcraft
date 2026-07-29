@@ -30,7 +30,7 @@ class MainActivity : Activity() {
         )
 
         val density = resources.displayMetrics.density
-        val gizmoSize = (100 * density).toInt()
+        val gizmoSize = (68 * density).toInt()
         val margin = (16 * density).toInt()
         val gizmoParams = FrameLayout.LayoutParams(gizmoSize, gizmoSize)
         gizmoParams.gravity = Gravity.TOP or Gravity.END
