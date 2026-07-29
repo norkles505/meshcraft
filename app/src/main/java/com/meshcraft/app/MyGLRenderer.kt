@@ -45,7 +45,9 @@ class MyGLRenderer : GLSurfaceView.Renderer {
 
         val ratio = viewportWidth.toFloat() / viewportHeight.toFloat()
         if (isOrthographic) {
-            val orthoSize = 1.8f
+            // Matches the apparent size of the perspective view at the same camera distance
+            // (distance * tan(halfFOV) = 6.5 * 0.5), so switching views doesn't feel like a zoom.
+            val orthoSize = 3.25f
             Matrix.orthoM(projectionMatrix, 0, -orthoSize * ratio, orthoSize * ratio, -orthoSize, orthoSize, 0.1f, 30f)
         } else {
             Matrix.frustumM(projectionMatrix, 0, -ratio, ratio, -1f, 1f, 2f, 30f)
