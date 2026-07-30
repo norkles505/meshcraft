@@ -10,6 +10,9 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupMenu
+
+enum class AppMode { LAYOUT, MODELING, UV_EDITING }
 
 class MainActivity : Activity() {
 
@@ -18,6 +21,13 @@ class MainActivity : Activity() {
 
     private lateinit var handButton: ImageView
     private lateinit var lockButton: ImageView
+
+    private lateinit var fileButton: ImageView
+    private lateinit var layoutTab: ImageView
+    private lateinit var modelingTab: ImageView
+    private lateinit var uvEditingTab: ImageView
+
+    private var currentMode: AppMode = AppMode.LAYOUT
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,7 +67,85 @@ class MainActivity : Activity() {
             bottomMargin = margin
         })
 
+        root.addView(buildTopBar(), FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.TOP
+            topMargin = margin
+        })
+
         setContentView(root)
+    }
+
+    private fun buildTopBar(): FrameLayout {
+        val density = resources.displayMetrics.density
+        val margin = (16 * density).toInt()
+        val bar = FrameLayout(this)
+
+        // File: icono suelto en la esquina, abre un menu (por ahora con placeholders).
+        fileButton = createIconButton(R.drawable.ic_file)
+        fileButton.setOnClickListener { showFileMenu(it) }
+        val fileParams = FrameLayout.LayoutParams(
+            fileButton.layoutParams.width,
+            fileButton.layoutParams.height
+        )
+        fileParams.gravity = Gravity.TOP or Gravity.START
+        fileParams.leftMargin = margin
+        bar.addView(fileButton, fileParams)
+
+        // Layout / Modeling / UV Editing: pestañas de modo, centradas.
+        val tabsRow = LinearLayout(this)
+        tabsRow.orientation = LinearLayout.HORIZONTAL
+
+        layoutTab = createIconButton(R.drawable.ic_layout)
+        modelingTab = createIconButton(R.drawable.ic_modeling)
+        uvEditingTab = createIconButton(R.drawable.ic_uv_editing)
+
+        layoutTab.setOnClickListener { setMode(AppMode.LAYOUT) }
+        modelingTab.setOnClickListener { setMode(AppMode.MODELING) }
+        uvEditingTab.setOnClickListener { setMode(AppMode.UV_EDITING) }
+
+        val spacing = (8 * density).toInt()
+        for (tab in listOf(layoutTab, modelingTab, uvEditingTab)) {
+            (tab.layoutParams as LinearLayout.LayoutParams).leftMargin = spacing
+            tabsRow.addView(tab)
+        }
+        // El primer tab no necesita margen izquierdo extra.
+        (layoutTab.layoutParams as LinearLayout.LayoutParams).leftMargin = 0
+
+        val tabsParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        tabsParams.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        bar.addView(tabsRow, tabsParams)
+
+        updateModeHighlight()
+
+        return bar
+    }
+
+    private fun setMode(mode: AppMode) {
+        currentMode = mode
+        updateModeHighlight()
+        // TODO: cambiar la interfaz/herramientas segun el modo (Layout / Modeling / UV Editing).
+    }
+
+    private fun updateModeHighlight() {
+        layoutTab.background = circleBackground(currentMode == AppMode.LAYOUT)
+        modelingTab.background = circleBackground(currentMode == AppMode.MODELING)
+        uvEditingTab.background = circleBackground(currentMode == AppMode.UV_EDITING)
+    }
+
+    private fun showFileMenu(anchor: android.view.View) {
+        val popup = PopupMenu(this, anchor)
+        popup.menu.add("Nuevo")
+        popup.menu.add("Abrir")
+        popup.menu.add("Guardar")
+        popup.menu.add("Exportar")
+        // TODO: conectar cada opcion a su logica real (nuevo/abrir/guardar/exportar proyecto).
+        popup.show()
     }
 
     private fun buildToolButtonColumn(): LinearLayout {
