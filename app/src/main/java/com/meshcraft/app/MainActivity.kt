@@ -2,15 +2,19 @@ package com.meshcraft.app
 
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.PopupMenu
+import android.widget.PopupWindow
+import android.widget.TextView
+import android.widget.Toast
 
 enum class AppMode { LAYOUT, MODELING, UV_EDITING }
 
@@ -83,7 +87,7 @@ class MainActivity : Activity() {
         val margin = (16 * density).toInt()
         val bar = FrameLayout(this)
 
-        // File: icono suelto en la esquina, abre un menu (por ahora con placeholders).
+        // File: icono suelto en la esquina, abre un menu propio (New / Save / Import / Export).
         fileButton = createIconButton(R.drawable.ic_file)
         fileButton.setOnClickListener { showFileMenu(it) }
         val fileParams = FrameLayout.LayoutParams(
@@ -138,14 +142,99 @@ class MainActivity : Activity() {
         uvEditingTab.background = circleBackground(currentMode == AppMode.UV_EDITING)
     }
 
-    private fun showFileMenu(anchor: android.view.View) {
-        val popup = PopupMenu(this, anchor)
-        popup.menu.add("Nuevo")
-        popup.menu.add("Abrir")
-        popup.menu.add("Guardar")
-        popup.menu.add("Exportar")
-        // TODO: conectar cada opcion a su logica real (nuevo/abrir/guardar/exportar proyecto).
-        popup.show()
+    private fun showFileMenu(anchor: View) {
+        val density = resources.displayMetrics.density
+        val menuColumn = LinearLayout(this)
+        menuColumn.orientation = LinearLayout.VERTICAL
+        menuColumn.background = menuBackground()
+        val vPad = (6 * density).toInt()
+        menuColumn.setPadding(vPad, vPad, vPad, vPad)
+
+        val popup = PopupWindow(
+            menuColumn,
+            (170 * density).toInt(),
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            true
+        )
+        popup.isOutsideTouchable = true
+        popup.elevation = 12 * density
+
+        menuColumn.addView(buildFileMenuItem(R.drawable.ic_new, "New") {
+            popup.dismiss()
+            onFileMenuAction("New")
+        })
+        menuColumn.addView(buildFileMenuItem(R.drawable.ic_save, "Save") {
+            popup.dismiss()
+            onFileMenuAction("Save")
+        })
+        menuColumn.addView(buildFileMenuItem(R.drawable.ic_import, "Import") {
+            popup.dismiss()
+            onFileMenuAction("Import")
+        })
+        menuColumn.addView(buildFileMenuItem(R.drawable.ic_export, "Export") {
+            popup.dismiss()
+            onFileMenuAction("Export")
+        })
+
+        popup.showAsDropDown(anchor, 0, (8 * density).toInt())
+    }
+
+    private fun buildFileMenuItem(iconRes: Int, label: String, onClick: () -> Unit): LinearLayout {
+        val density = resources.displayMetrics.density
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        val hPad = (10 * density).toInt()
+        val vPad = (10 * density).toInt()
+        row.setPadding(hPad, vPad, hPad, vPad)
+        row.isClickable = true
+        row.background = menuItemRippleBackground()
+        row.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+
+        val icon = ImageView(this)
+        icon.setImageResource(iconRes)
+        val iconSize = (20 * density).toInt()
+        icon.layoutParams = LinearLayout.LayoutParams(iconSize, iconSize)
+        row.addView(icon)
+
+        val text = TextView(this)
+        text.text = label
+        text.setTextColor(Color.WHITE)
+        text.textSize = 14f
+        val textParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        textParams.leftMargin = (12 * density).toInt()
+        text.layoutParams = textParams
+        row.addView(text)
+
+        row.setOnClickListener { onClick() }
+        return row
+    }
+
+    private fun onFileMenuAction(action: String) {
+        // TODO: reemplazar por la logica real de New/Save/Import/Export una vez definido el formato de proyecto.
+        Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun menuBackground(): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 14 * resources.displayMetrics.density
+            color = ColorStateList.valueOf(Color.argb(245, 32, 32, 32))
+        }
+    }
+
+    private fun menuItemRippleBackground(): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 8 * resources.displayMetrics.density
+            color = ColorStateList.valueOf(Color.TRANSPARENT)
+        }
     }
 
     private fun buildToolButtonColumn(): LinearLayout {
