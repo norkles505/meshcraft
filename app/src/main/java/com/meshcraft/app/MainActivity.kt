@@ -186,7 +186,7 @@ class MainActivity : Activity() {
 
         val popup = PopupWindow(
             menuColumn,
-            (180 * density).toInt(),
+            LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
             true
         )
@@ -216,12 +216,15 @@ class MainActivity : Activity() {
         }
         if (categories.isEmpty()) {
             menuColumn.addView(buildSimpleMenuRow("Próximamente") { })
-            return
+        } else {
+            for (category in categories) {
+                menuColumn.addView(buildSimpleMenuRow(category) {
+                    fillModeMenuWithCategoryContent(menuColumn, mode, category, popup)
+                })
+            }
         }
-        for (category in categories) {
-            menuColumn.addView(buildSimpleMenuRow(category) {
-                fillModeMenuWithCategoryContent(menuColumn, mode, category, popup)
-            })
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
     }
 
@@ -232,6 +235,9 @@ class MainActivity : Activity() {
         })
         // TODO: reemplazar por las opciones reales de cada categoria (View/Select/Add/Object).
         menuColumn.addView(buildSimpleMenuRow("Próximamente") { })
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
     }
 
     private fun buildSimpleMenuRow(label: String, onClick: () -> Unit): LinearLayout {
@@ -245,7 +251,7 @@ class MainActivity : Activity() {
         row.isClickable = true
         row.background = menuItemPressBackground()
         row.layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         )
 
