@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -150,14 +151,19 @@ class MainActivity : Activity() {
         val vPad = (6 * density).toInt()
         menuColumn.setPadding(vPad, vPad, vPad, vPad)
 
+        fileButton.background = circleBackground(true)
+
         val popup = PopupWindow(
             menuColumn,
-            (170 * density).toInt(),
+            LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
             true
         )
         popup.isOutsideTouchable = true
         popup.elevation = 12 * density
+        popup.setOnDismissListener {
+            fileButton.background = circleBackground(false)
+        }
 
         menuColumn.addView(buildFileMenuItem(R.drawable.ic_new, "New") {
             popup.dismiss()
@@ -184,31 +190,31 @@ class MainActivity : Activity() {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        val hPad = (10 * density).toInt()
-        val vPad = (10 * density).toInt()
+        val hPad = (12 * density).toInt()
+        val vPad = (9 * density).toInt()
         row.setPadding(hPad, vPad, hPad, vPad)
         row.isClickable = true
-        row.background = menuItemRippleBackground()
+        row.background = menuItemPressBackground()
         row.layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         )
 
         val icon = ImageView(this)
         icon.setImageResource(iconRes)
-        val iconSize = (20 * density).toInt()
+        val iconSize = (18 * density).toInt()
         icon.layoutParams = LinearLayout.LayoutParams(iconSize, iconSize)
         row.addView(icon)
 
         val text = TextView(this)
         text.text = label
         text.setTextColor(Color.WHITE)
-        text.textSize = 14f
+        text.textSize = 13f
         val textParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         )
-        textParams.leftMargin = (12 * density).toInt()
+        textParams.leftMargin = (10 * density).toInt()
         text.layoutParams = textParams
         row.addView(text)
 
@@ -229,11 +235,21 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun menuItemRippleBackground(): GradientDrawable {
-        return GradientDrawable().apply {
+    private fun menuItemPressBackground(): StateListDrawable {
+        val density = resources.displayMetrics.density
+        val pressed = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = 8 * resources.displayMetrics.density
+            cornerRadius = 8 * density
+            color = ColorStateList.valueOf(Color.argb(235, 242, 128, 26))
+        }
+        val normal = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 8 * density
             color = ColorStateList.valueOf(Color.TRANSPARENT)
+        }
+        return StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), pressed)
+            addState(intArrayOf(), normal)
         }
     }
 
