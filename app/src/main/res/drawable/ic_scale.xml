@@ -1,0 +1,32 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="28dp"
+    android:height="28dp"
+    android:viewportWidth="640"
+    android:viewportHeight="640">
+    <path
+        android:pathData="M135.3992,78.9687 L514.0299,78.9687 A55.251892,55.251892 0 0 1 569.2818,134.2206 L569.2818,512.8512 A55.251892,55.251892 0 0 1 514.0299,568.1031 L135.3992,568.1031 A55.251892,55.251892 0 0 1 80.1473,512.8512 L80.1473,134.2206 A55.251892,55.251892 0 0 1 135.3992,78.9687 Z"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="45"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="m 304.6036,554.59562 0,-207.0585 H 87.080369"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="40"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+    <!-- Nota: la punta de flecha con marcador (ArrowWideRounded) se reconstruyo como un chevron abierto, agrandado para que se vea al tamano real del boton. -->
+    <path
+        android:pathData="M 345.34,297.02 L 477.35,166.19"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="40"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M 477.35,166.19 L 419.37,181.62 M 477.35,166.19 L 461.41,224.04"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="36"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+</vector>

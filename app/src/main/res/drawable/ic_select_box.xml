@@ -1,0 +1,16 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="28dp"
+    android:height="28dp"
+    android:viewportWidth="640"
+    android:viewportHeight="640">
+    <!-- Nota: el borde punteado del SVG original no es soportado por vector drawables de Android, se dejo solido y mas grueso para que se vea al tamano real del boton. -->
+    <path
+        android:pathData="M96.5042,42.4309 L543.4958,42.4309 A55.251892,55.251892 0 0 1 598.7477,97.6828 L598.7477,544.6745 A55.251892,55.251892 0 0 1 543.4958,599.9264 L96.5042,599.9264 A55.251892,55.251892 0 0 1 41.2523,544.6745 L41.2523,97.6828 A55.251892,55.251892 0 0 1 96.5042,42.4309 Z"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="45"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="m 424.57715,487.3135 -58.57747,33.81632 c -4.68671,2.70465 -10.66746,1.10872 -13.37207,-3.56135 l -52.29439,-90.56477 -69.41477,79.15548 c -1.56231,2.03268 -3.91417,3.47736 -6.65249,3.81336 -5.37566,0.63837 -10.26407,-3.20857 -10.88549,-8.58428 L 168.52598,129.47879 c -0.26878,-2.41905 0.33596,-4.92194 1.8983,-7.02189 3.24221,-4.3173 9.37386,-5.19074 13.69115,-1.96547 L 483.1697,344.85844 c 2.18386,1.39433 3.81338,3.64539 4.35085,6.38371 1.02473,5.30857 -2.43586,10.46577 -7.74438,11.49058 l -103.90074,20.66273 51.97618,90.01001 0.30233,0.50398 c 2.70464,4.6867 1.10873,10.66745 -3.56136,13.37206 z"
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd" />
+</vector>

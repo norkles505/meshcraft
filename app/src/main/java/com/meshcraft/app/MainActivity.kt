@@ -18,6 +18,7 @@ import android.widget.TextView
 import android.widget.Toast
 
 enum class AppMode { LAYOUT, MODELING, UV_EDITING }
+enum class LayoutTool { SELECT, MOVE, ROTATE, SCALE }
 
 class MainActivity : Activity() {
 
@@ -32,7 +33,20 @@ class MainActivity : Activity() {
     private lateinit var modelingTab: ImageView
     private lateinit var uvEditingTab: ImageView
 
+    private lateinit var leftToolColumn: LinearLayout
+    private lateinit var selectToolBtn: ImageView
+    private lateinit var moveToolBtn: ImageView
+    private lateinit var rotateToolBtn: ImageView
+    private lateinit var scaleToolBtn: ImageView
+
     private var currentMode: AppMode = AppMode.LAYOUT
+    private var currentLayoutTool: LayoutTool = LayoutTool.SELECT
+
+    private var modeMenuPopup: PopupWindow? = null
+
+    // Categorias del menu de cada modo (estilo Blender: View / Select / Add / Object).
+    // Por ahora solo Layout tiene contenido definido; Modeling y UV Editing quedan pendientes.
+    private val layoutMenuCategories = listOf("View", "Select", "Add", "Object")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,6 +86,15 @@ class MainActivity : Activity() {
             bottomMargin = margin
         })
 
+        leftToolColumn = buildLeftToolColumn()
+        root.addView(leftToolColumn, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            leftMargin = margin
+        })
+
         root.addView(buildTopBar(), FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.WRAP_CONTENT
@@ -107,9 +130,9 @@ class MainActivity : Activity() {
         modelingTab = createIconButton(R.drawable.ic_modeling)
         uvEditingTab = createIconButton(R.drawable.ic_uv_editing)
 
-        layoutTab.setOnClickListener { setMode(AppMode.LAYOUT) }
-        modelingTab.setOnClickListener { setMode(AppMode.MODELING) }
-        uvEditingTab.setOnClickListener { setMode(AppMode.UV_EDITING) }
+        layoutTab.setOnClickListener { onModeTabClicked(AppMode.LAYOUT, layoutTab) }
+        modelingTab.setOnClickListener { onModeTabClicked(AppMode.MODELING, modelingTab) }
+        uvEditingTab.setOnClickListener { onModeTabClicked(AppMode.UV_EDITING, uvEditingTab) }
 
         val spacing = (8 * density).toInt()
         for (tab in listOf(layoutTab, modelingTab, uvEditingTab)) {
@@ -131,10 +154,157 @@ class MainActivity : Activity() {
         return bar
     }
 
+    /**
+     * Tocar el tab del modo en el que ya estas parado abre/cierra su menu (View/Select/Add/Object).
+     * Tocar un tab distinto cambia de modo y cierra cualquier menu abierto.
+     */
+    private fun onModeTabClicked(mode: AppMode, anchor: View) {
+        if (mode == currentMode) {
+            toggleModeMenu(mode, anchor)
+        } else {
+            modeMenuPopup?.dismiss()
+            setMode(mode)
+        }
+    }
+
+    private fun toggleModeMenu(mode: AppMode, anchor: View) {
+        val existing = modeMenuPopup
+        if (existing != null && existing.isShowing) {
+            existing.dismiss()
+            return
+        }
+        showModeMenu(mode, anchor)
+    }
+
+    private fun showModeMenu(mode: AppMode, anchor: View) {
+        val density = resources.displayMetrics.density
+        val menuColumn = LinearLayout(this)
+        menuColumn.orientation = LinearLayout.VERTICAL
+        menuColumn.background = menuBackground()
+        val vPad = (6 * density).toInt()
+        menuColumn.setPadding(vPad, vPad, vPad, vPad)
+
+        val popup = PopupWindow(
+            menuColumn,
+            (180 * density).toInt(),
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            true
+        )
+        popup.isOutsideTouchable = true
+        popup.elevation = 12 * density
+
+        leftToolColumn.visibility = View.GONE
+        popup.setOnDismissListener {
+            modeMenuPopup = null
+            if (currentMode == AppMode.LAYOUT) {
+                leftToolColumn.visibility = View.VISIBLE
+            }
+        }
+
+        fillModeMenuWithCategories(menuColumn, mode, popup)
+
+        modeMenuPopup = popup
+        popup.showAsDropDown(anchor, 0, (8 * density).toInt())
+    }
+
+    private fun fillModeMenuWithCategories(menuColumn: LinearLayout, mode: AppMode, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        val categories = when (mode) {
+            AppMode.LAYOUT -> layoutMenuCategories
+            AppMode.MODELING -> emptyList() // TODO: definir categorias de Modeling.
+            AppMode.UV_EDITING -> emptyList() // TODO: definir categorias de UV Editing.
+        }
+        if (categories.isEmpty()) {
+            menuColumn.addView(buildSimpleMenuRow("Próximamente") { })
+            return
+        }
+        for (category in categories) {
+            menuColumn.addView(buildSimpleMenuRow(category) {
+                fillModeMenuWithCategoryContent(menuColumn, mode, category, popup)
+            })
+        }
+    }
+
+    private fun fillModeMenuWithCategoryContent(menuColumn: LinearLayout, mode: AppMode, category: String, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, mode, popup)
+        })
+        // TODO: reemplazar por las opciones reales de cada categoria (View/Select/Add/Object).
+        menuColumn.addView(buildSimpleMenuRow("Próximamente") { })
+    }
+
+    private fun buildSimpleMenuRow(label: String, onClick: () -> Unit): LinearLayout {
+        val density = resources.displayMetrics.density
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        val hPad = (12 * density).toInt()
+        val vPad = (10 * density).toInt()
+        row.setPadding(hPad, vPad, hPad, vPad)
+        row.isClickable = true
+        row.background = menuItemPressBackground()
+        row.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+
+        val text = TextView(this)
+        text.text = label
+        text.setTextColor(Color.WHITE)
+        text.textSize = 14f
+        row.addView(text)
+
+        row.setOnClickListener { onClick() }
+        return row
+    }
+
+    private fun buildLeftToolColumn(): LinearLayout {
+        val density = resources.displayMetrics.density
+        val column = LinearLayout(this)
+        column.orientation = LinearLayout.VERTICAL
+
+        selectToolBtn = createIconButton(R.drawable.ic_select_box)
+        moveToolBtn = createIconButton(R.drawable.ic_move)
+        rotateToolBtn = createIconButton(R.drawable.ic_rotate)
+        scaleToolBtn = createIconButton(R.drawable.ic_scale)
+
+        selectToolBtn.setOnClickListener { setLayoutTool(LayoutTool.SELECT) }
+        moveToolBtn.setOnClickListener { setLayoutTool(LayoutTool.MOVE) }
+        rotateToolBtn.setOnClickListener { setLayoutTool(LayoutTool.ROTATE) }
+        scaleToolBtn.setOnClickListener { setLayoutTool(LayoutTool.SCALE) }
+
+        val spacing = (8 * density).toInt()
+        for (btn in listOf(selectToolBtn, moveToolBtn, rotateToolBtn, scaleToolBtn)) {
+            (btn.layoutParams as LinearLayout.LayoutParams).topMargin = spacing
+            column.addView(btn)
+        }
+        (selectToolBtn.layoutParams as LinearLayout.LayoutParams).topMargin = 0
+
+        updateLayoutToolHighlight()
+
+        return column
+    }
+
+    private fun setLayoutTool(tool: LayoutTool) {
+        currentLayoutTool = tool
+        updateLayoutToolHighlight()
+        // TODO: conectar cada herramienta a su logica real (seleccionar/mover/rotar/escalar objeto)
+        // una vez que exista el modelo de escena.
+    }
+
+    private fun updateLayoutToolHighlight() {
+        selectToolBtn.background = circleBackground(currentLayoutTool == LayoutTool.SELECT)
+        moveToolBtn.background = circleBackground(currentLayoutTool == LayoutTool.MOVE)
+        rotateToolBtn.background = circleBackground(currentLayoutTool == LayoutTool.ROTATE)
+        scaleToolBtn.background = circleBackground(currentLayoutTool == LayoutTool.SCALE)
+    }
+
     private fun setMode(mode: AppMode) {
         currentMode = mode
         updateModeHighlight()
-        // TODO: cambiar la interfaz/herramientas segun el modo (Layout / Modeling / UV Editing).
+        leftToolColumn.visibility = if (mode == AppMode.LAYOUT) View.VISIBLE else View.GONE
+        // TODO: cambiar el resto de la interfaz/herramientas segun el modo (Modeling / UV Editing).
     }
 
     private fun updateModeHighlight() {

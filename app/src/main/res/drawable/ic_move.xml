@@ -1,0 +1,43 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="28dp"
+    android:height="28dp"
+    android:viewportWidth="640"
+    android:viewportHeight="640">
+    <!-- Nota: los marcadores de flecha del SVG original no son soportados por vector drawables; se reconstruyeron como triangulos, agrandados para que se vean al tamano real del boton. -->
+    <path
+        android:pathData="M 254.49,317.998 L 147.34,317.998"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="30"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M 57.34,317.998 L 147.34,272.998 L 147.34,362.998 Z"
+        android:fillColor="#FFFFFF" />
+    <path
+        android:pathData="M 377.50,318.00 L 484.65,318.00"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="30"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M 574.65,318.00 L 484.65,273.00 L 484.65,363.00 Z"
+        android:fillColor="#FFFFFF" />
+    <path
+        android:pathData="M 319.40,253.71 L 319.40,146.56"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="30"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M 319.40,56.56 L 274.40,146.56 L 364.40,146.56 Z"
+        android:fillColor="#FFFFFF" />
+    <path
+        android:pathData="M 319.40,376.72 L 319.40,483.87"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="30"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M 319.40,573.87 L 274.40,483.87 L 364.40,483.87 Z"
+        android:fillColor="#FFFFFF" />
+</vector>
