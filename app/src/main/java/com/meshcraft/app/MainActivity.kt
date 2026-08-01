@@ -57,11 +57,13 @@ class MainActivity : Activity() {
     )
 
     // Items simples de Layout > View (placeholder por ahora, no dependen del modelo de escena).
+    // Nota: Asset Shelf, Cameras y View Regions se sacaron a proposito - dependen de sistemas
+    // que la app todavia no tiene (biblioteca de assets, objetos Camara, layout configurable).
     private val viewSimpleActionItems = listOf(
-        "Toolbar", "Sidebar", "Tool Settings", "Asset Shelf", "Adjust Last Operation",
-        "Frame Selected", "Frame All", "Perspective/Orthographic", "Local View", "Cameras"
+        "Toolbar", "Sidebar", "Tool Settings", "Adjust Last Operation",
+        "Frame Selected", "Frame All", "Perspective/Orthographic", "Local View"
     )
-    private val viewTrailingActionItems = listOf("View Regions", "Area")
+    private val viewTrailingActionItems = listOf("Area")
 
     private val viewNavigationSubmenuItems = listOf("Center View to Cursor", "Center View to Selected", "Zoom Region")
     private val viewAlignViewSubmenuItems = listOf(
@@ -97,6 +99,20 @@ class MainActivity : Activity() {
         AddMenuEntry("Lattice", R.drawable.ic_add_lattice),
         AddMenuEntry("Empty", R.drawable.ic_add_empty),
         AddMenuEntry("Image", R.drawable.ic_add_image)
+    )
+
+    /**
+     * Contenido de Layout > Object: todo como filas simples, sin submenu (decisión del usuario).
+     * Se sacó "Quick Effects" de la lista original porque depende de Particles, fuera del alcance
+     * del proyecto. Asset, Constraints y Clean Up entran igual como placeholder aunque estaban
+     * en duda en el checklist original.
+     */
+    private val objectMenuItems = listOf(
+        "Transform", "Set Origin", "Mirror", "Clear", "Apply", "Snap",
+        "Duplicate Objects", "Duplicate Linked", "Join", "Copy Objects", "Paste Objects",
+        "Asset", "Collection", "Relations", "Parent", "Modifiers", "Constraints",
+        "Link/Transfer Data", "Shade Smooth", "Shade Auto Smooth", "Shade Flat",
+        "Convert", "Show/Hide", "Clean Up", "Delete", "Delete Global"
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -315,11 +331,14 @@ class MainActivity : Activity() {
             renderLayoutAddMenu(menuColumn, popup)
             return
         }
+        if (mode == AppMode.LAYOUT && category == "Object") {
+            renderLayoutObjectMenu(menuColumn, popup)
+            return
+        }
         menuColumn.removeAllViews()
         menuColumn.addView(buildSimpleMenuRow("← Volver") {
             fillModeMenuWithCategories(menuColumn, mode, popup)
         })
-        // TODO: reemplazar por las opciones reales de Object.
         menuColumn.addView(buildSimpleMenuRow("Próximamente") { })
         if (popup.isShowing) {
             popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
@@ -532,6 +551,35 @@ class MainActivity : Activity() {
 
     private fun onAddMenuAction(action: String) {
         // TODO: conectar a la logica real de creacion de objetos una vez que exista el modelo de escena editable.
+        Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Contenido de Layout > Object: lista plana confirmada por el usuario, todo placeholder.
+     * Se saco "Quick Effects" (dependia de Particles, fuera de alcance). Asset, Constraints y
+     * Clean Up entran igual como placeholder, aunque van a necesitar filtro fino mas adelante
+     * (ej. Constraints solo deberia habilitar los que no sirven para animar, como Shrinkwrap).
+     */
+    private fun renderLayoutObjectMenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, AppMode.LAYOUT, popup)
+        })
+
+        for (item in objectMenuItems) {
+            menuColumn.addView(buildSimpleMenuRow(item) {
+                popup.dismiss()
+                onObjectMenuAction(item)
+            })
+        }
+
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    private fun onObjectMenuAction(action: String) {
+        // TODO: conectar a la logica real de cada accion una vez que exista el modelo de escena editable.
         Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
     }
 
