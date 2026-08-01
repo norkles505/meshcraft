@@ -9,11 +9,13 @@ import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
+import android.view.View.MeasureSpec
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 
@@ -47,6 +49,55 @@ class MainActivity : Activity() {
     // Categorias del menu de cada modo (estilo Blender: View / Select / Add / Object).
     // Por ahora solo Layout tiene contenido definido; Modeling y UV Editing quedan pendientes.
     private val layoutMenuCategories = listOf("View", "Select", "Add", "Object")
+
+    private val selectModeSubmenuItems = listOf("Set", "Extend", "Subtract", "Difference", "Intersect")
+    private val selectMoreLessSubmenuItems = listOf("More", "Less", "Parent", "Child")
+    private val selectAllByTypeSubmenuItems = listOf(
+        "Mesh", "Curve", "Surface", "Metaball", "Text", "Grease Pencil", "Armature", "Lattice", "Empty"
+    )
+
+    // Items simples de Layout > View (placeholder por ahora, no dependen del modelo de escena).
+    private val viewSimpleActionItems = listOf(
+        "Toolbar", "Sidebar", "Tool Settings", "Asset Shelf", "Adjust Last Operation",
+        "Frame Selected", "Frame All", "Perspective/Orthographic", "Local View", "Cameras"
+    )
+    private val viewTrailingActionItems = listOf("View Regions", "Area")
+
+    private val viewNavigationSubmenuItems = listOf("Center View to Cursor", "Center View to Selected", "Zoom Region")
+    private val viewAlignViewSubmenuItems = listOf(
+        "Center Cursor and View All", "Center View to Cursor", "Align View to Active", "View Lock"
+    )
+
+    /** Viewpoint reutiliza los mismos angulos que ya usa el gizmo de ejes (ver GizmoView / animateCameraTo). */
+    private data class ViewpointOption(val label: String, val angleX: Float, val angleY: Float, val planeAxis: Char)
+    private val viewpointOptions = listOf(
+        ViewpointOption("Top", 90f, 0f, 'Z'),
+        ViewpointOption("Bottom", -90f, 0f, 'Z'),
+        ViewpointOption("Front", 0f, 0f, 'Y'),
+        ViewpointOption("Back", 0f, 180f, 'Y'),
+        ViewpointOption("Right", 0f, -90f, 'X'),
+        ViewpointOption("Left", 0f, 90f, 'X')
+    )
+
+    /**
+     * Categorias de Layout > Add, con su icono propio (a diferencia de Select/View que son solo texto).
+     * Todas placeholder por ahora, incluida Mesh (su submenu de primitivas queda pendiente hasta
+     * que existan los iconos de cada primitiva). Camera / Collection Instance / Monkey quedan afuera
+     * por ahora, sin icono todavia.
+     */
+    private data class AddMenuEntry(val label: String, val iconRes: Int)
+    private val addMenuEntries = listOf(
+        AddMenuEntry("Mesh", R.drawable.ic_add_mesh),
+        AddMenuEntry("Curve", R.drawable.ic_add_curve),
+        AddMenuEntry("Surface", R.drawable.ic_add_surface),
+        AddMenuEntry("Text", R.drawable.ic_add_text),
+        AddMenuEntry("Metaball", R.drawable.ic_add_metaball),
+        AddMenuEntry("Grease Pencil", R.drawable.ic_add_grease_pencil),
+        AddMenuEntry("Armature", R.drawable.ic_add_armature),
+        AddMenuEntry("Lattice", R.drawable.ic_add_lattice),
+        AddMenuEntry("Empty", R.drawable.ic_add_empty),
+        AddMenuEntry("Image", R.drawable.ic_add_image)
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -180,12 +231,18 @@ class MainActivity : Activity() {
         val density = resources.displayMetrics.density
         val menuColumn = LinearLayout(this)
         menuColumn.orientation = LinearLayout.VERTICAL
-        menuColumn.background = menuBackground()
+
+        val scrollContainer = maxHeightScrollView(360)
+        scrollContainer.background = menuBackground()
         val vPad = (6 * density).toInt()
-        menuColumn.setPadding(vPad, vPad, vPad, vPad)
+        scrollContainer.setPadding(vPad, vPad, vPad, vPad)
+        scrollContainer.addView(menuColumn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
 
         val popup = PopupWindow(
-            menuColumn,
+            scrollContainer,
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
             true
@@ -205,6 +262,23 @@ class MainActivity : Activity() {
 
         modeMenuPopup = popup
         popup.showAsDropDown(anchor, 0, (8 * density).toInt())
+    }
+
+    /** ScrollView que nunca crece mas alla de maxHeightDp, para que menus largos no se salgan de la pantalla. */
+    private fun maxHeightScrollView(maxHeightDp: Int): ScrollView {
+        val maxHeightPx = (maxHeightDp * resources.displayMetrics.density).toInt()
+        return object : ScrollView(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val mode = MeasureSpec.getMode(heightMeasureSpec)
+                val newHeightSpec = if (mode == MeasureSpec.UNSPECIFIED) {
+                    MeasureSpec.makeMeasureSpec(maxHeightPx, MeasureSpec.AT_MOST)
+                } else {
+                    val capped = minOf(MeasureSpec.getSize(heightMeasureSpec), maxHeightPx)
+                    MeasureSpec.makeMeasureSpec(capped, MeasureSpec.AT_MOST)
+                }
+                super.onMeasure(widthMeasureSpec, newHeightSpec)
+            }
+        }
     }
 
     private fun fillModeMenuWithCategories(menuColumn: LinearLayout, mode: AppMode, popup: PopupWindow) {
@@ -229,15 +303,236 @@ class MainActivity : Activity() {
     }
 
     private fun fillModeMenuWithCategoryContent(menuColumn: LinearLayout, mode: AppMode, category: String, popup: PopupWindow) {
+        if (mode == AppMode.LAYOUT && category == "Select") {
+            renderLayoutSelectMenu(menuColumn, popup)
+            return
+        }
+        if (mode == AppMode.LAYOUT && category == "View") {
+            renderLayoutViewMenu(menuColumn, popup)
+            return
+        }
+        if (mode == AppMode.LAYOUT && category == "Add") {
+            renderLayoutAddMenu(menuColumn, popup)
+            return
+        }
         menuColumn.removeAllViews()
         menuColumn.addView(buildSimpleMenuRow("← Volver") {
             fillModeMenuWithCategories(menuColumn, mode, popup)
         })
-        // TODO: reemplazar por las opciones reales de cada categoria (View/Select/Add/Object).
+        // TODO: reemplazar por las opciones reales de Object.
         menuColumn.addView(buildSimpleMenuRow("Próximamente") { })
         if (popup.isShowing) {
             popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
+    }
+
+    /** Contenido de Layout > Select, tal cual la estructura confirmada por el usuario. */
+    private fun renderLayoutSelectMenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, AppMode.LAYOUT, popup)
+        })
+
+        addSelectActionRow(menuColumn, popup, "All")
+        addSelectActionRow(menuColumn, popup, "None")
+        addSelectActionRow(menuColumn, popup, "Invert")
+        menuColumn.addView(buildSimpleMenuRow("Box Select") {
+            renderSelectSubmenu(menuColumn, popup, selectModeSubmenuItems)
+        })
+        menuColumn.addView(buildSimpleMenuRow("Circle Select") {
+            renderSelectSubmenu(menuColumn, popup, selectModeSubmenuItems)
+        })
+        menuColumn.addView(buildSimpleMenuRow("Lasso Select") {
+            renderSelectSubmenu(menuColumn, popup, selectModeSubmenuItems)
+        })
+        addSelectActionRow(menuColumn, popup, "Select Active Camera")
+        addSelectActionRow(menuColumn, popup, "Select Mirror")
+        addSelectActionRow(menuColumn, popup, "Select Random")
+        menuColumn.addView(buildSimpleMenuRow("More/Less") {
+            renderSelectSubmenu(menuColumn, popup, selectMoreLessSubmenuItems)
+        })
+        menuColumn.addView(buildSimpleMenuRow("Select All by Type") {
+            renderSelectSubmenu(menuColumn, popup, selectAllByTypeSubmenuItems)
+        })
+        addSelectActionRow(menuColumn, popup, "Select Grouped")
+        addSelectActionRow(menuColumn, popup, "Select Linked")
+        addSelectActionRow(menuColumn, popup, "Select Pattern")
+
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Submenu generico dentro de Select (Box/Circle/Lasso, More/Less, Select All by Type). */
+    private fun renderSelectSubmenu(menuColumn: LinearLayout, popup: PopupWindow, items: List<String>) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderLayoutSelectMenu(menuColumn, popup)
+        })
+        for (item in items) {
+            addSelectActionRow(menuColumn, popup, item)
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    private fun addSelectActionRow(menuColumn: LinearLayout, popup: PopupWindow, label: String) {
+        menuColumn.addView(buildSimpleMenuRow(label) {
+            popup.dismiss()
+            onSelectMenuAction(label)
+        })
+    }
+
+    private fun onSelectMenuAction(action: String) {
+        // TODO: conectar a la logica real de seleccion una vez que exista el modelo de escena editable.
+        Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Contenido de Layout > View, en el orden acordado con el usuario:
+     * items simples -> Viewpoint (funcional, reusa el gizmo) -> Navigation -> Align View -> items simples finales.
+     */
+    private fun renderLayoutViewMenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, AppMode.LAYOUT, popup)
+        })
+
+        for (item in viewSimpleActionItems) {
+            addViewActionRow(menuColumn, popup, item)
+        }
+
+        menuColumn.addView(buildSimpleMenuRow("Viewpoint") {
+            renderViewpointSubmenu(menuColumn, popup)
+        })
+        menuColumn.addView(buildSimpleMenuRow("Navigation") {
+            renderViewSubmenu(menuColumn, popup, viewNavigationSubmenuItems)
+        })
+        menuColumn.addView(buildSimpleMenuRow("Align View") {
+            renderViewSubmenu(menuColumn, popup, viewAlignViewSubmenuItems)
+        })
+
+        for (item in viewTrailingActionItems) {
+            addViewActionRow(menuColumn, popup, item)
+        }
+
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /**
+     * Submenu de Viewpoint: unico contenido de View con logica real, ya que reusa
+     * animateCameraTo con los mismos angulos que el gizmo de ejes (ver viewpointOptions).
+     */
+    private fun renderViewpointSubmenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderLayoutViewMenu(menuColumn, popup)
+        })
+        for (option in viewpointOptions) {
+            menuColumn.addView(buildSimpleMenuRow(option.label) {
+                popup.dismiss()
+                animateCameraTo(option.angleX, option.angleY, option.planeAxis)
+            })
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Submenu generico dentro de View (Navigation, Align View), todos placeholder por ahora. */
+    private fun renderViewSubmenu(menuColumn: LinearLayout, popup: PopupWindow, items: List<String>) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderLayoutViewMenu(menuColumn, popup)
+        })
+        for (item in items) {
+            addViewActionRow(menuColumn, popup, item)
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    private fun addViewActionRow(menuColumn: LinearLayout, popup: PopupWindow, label: String) {
+        menuColumn.addView(buildSimpleMenuRow(label) {
+            popup.dismiss()
+            onViewMenuAction(label)
+        })
+    }
+
+    private fun onViewMenuAction(action: String) {
+        // TODO: conectar cada accion a su logica real (toggles de UI, camara, area, etc.) mas adelante.
+        Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Contenido de Layout > Add: categorias con icono propio (Mesh/Curve/Surface/Text/Metaball/
+     * Grease Pencil/Armature/Lattice/Empty/Image), todas placeholder. Mesh todavia no tiene submenu
+     * de primitivas (Plane, Cube, UV Sphere, etc.) porque esos iconos quedan pendientes de diseño.
+     * Camera / Collection Instance / Monkey quedan afuera por ahora, sin icono todavia.
+     */
+    private fun renderLayoutAddMenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, AppMode.LAYOUT, popup)
+        })
+
+        for (entry in addMenuEntries) {
+            menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                popup.dismiss()
+                onAddMenuAction(entry.label)
+            })
+        }
+
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Fila de menu con icono + texto, mismo estilo que buildFileMenuItem, reusada para Add. */
+    private fun buildAddMenuItem(iconRes: Int, label: String, onClick: () -> Unit): LinearLayout {
+        val density = resources.displayMetrics.density
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        val hPad = (12 * density).toInt()
+        val vPad = (9 * density).toInt()
+        row.setPadding(hPad, vPad, hPad, vPad)
+        row.isClickable = true
+        row.background = menuItemPressBackground()
+        row.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+
+        val icon = ImageView(this)
+        icon.setImageResource(iconRes)
+        val iconSize = (18 * density).toInt()
+        icon.layoutParams = LinearLayout.LayoutParams(iconSize, iconSize)
+        row.addView(icon)
+
+        val text = TextView(this)
+        text.text = label
+        text.setTextColor(Color.WHITE)
+        text.textSize = 13f
+        val textParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        textParams.leftMargin = (10 * density).toInt()
+        text.layoutParams = textParams
+        row.addView(text)
+
+        row.setOnClickListener { onClick() }
+        return row
+    }
+
+    private fun onAddMenuAction(action: String) {
+        // TODO: conectar a la logica real de creacion de objetos una vez que exista el modelo de escena editable.
+        Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
     }
 
     private fun buildSimpleMenuRow(label: String, onClick: () -> Unit): LinearLayout {
