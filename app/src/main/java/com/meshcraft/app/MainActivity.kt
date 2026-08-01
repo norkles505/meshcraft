@@ -103,16 +103,17 @@ class MainActivity : Activity() {
 
     /**
      * Contenido de Layout > Object: todo como filas simples, sin submenu (decisión del usuario).
-     * Se sacó "Quick Effects" de la lista original porque depende de Particles, fuera del alcance
-     * del proyecto. Asset, Constraints y Clean Up entran igual como placeholder aunque estaban
-     * en duda en el checklist original.
+     * Se sacó "Quick Effects" (dependia de Particles, fuera de alcance) y ademas Asset, Constraints,
+     * Clean Up y Delete Global - todos dependen de sistemas que la app no tiene todavia (biblioteca
+     * de assets, constraints pensados para animacion, historial de datos para limpiar, objetos
+     * enlazados entre escenas). Mismo criterio que se aplico en Layout > View.
      */
     private val objectMenuItems = listOf(
         "Transform", "Set Origin", "Mirror", "Clear", "Apply", "Snap",
         "Duplicate Objects", "Duplicate Linked", "Join", "Copy Objects", "Paste Objects",
-        "Asset", "Collection", "Relations", "Parent", "Modifiers", "Constraints",
+        "Collection", "Relations", "Parent", "Modifiers",
         "Link/Transfer Data", "Shade Smooth", "Shade Auto Smooth", "Shade Flat",
-        "Convert", "Show/Hide", "Clean Up", "Delete", "Delete Global"
+        "Convert", "Show/Hide", "Delete"
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -556,9 +557,6 @@ class MainActivity : Activity() {
 
     /**
      * Contenido de Layout > Object: lista plana confirmada por el usuario, todo placeholder.
-     * Se saco "Quick Effects" (dependia de Particles, fuera de alcance). Asset, Constraints y
-     * Clean Up entran igual como placeholder, aunque van a necesitar filtro fino mas adelante
-     * (ej. Constraints solo deberia habilitar los que no sirven para animar, como Shrinkwrap).
      */
     private fun renderLayoutObjectMenu(menuColumn: LinearLayout, popup: PopupWindow) {
         menuColumn.removeAllViews()

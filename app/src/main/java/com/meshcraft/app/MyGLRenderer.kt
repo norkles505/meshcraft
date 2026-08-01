@@ -23,8 +23,9 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     private var viewportHeight = 1
 
     // angleX = pitch (rotates around world X). angleY = yaw (rotates around world Z, since Z is "up" here, like Blender).
-    @Volatile var angleX = -25f
-    @Volatile var angleY = -35f
+    // Default fijado por el usuario (capturado con el long-press de debug en el gizmo).
+    @Volatile var angleX = 19.8f
+    @Volatile var angleY = -137.0f
 
     // Like Blender: axis-aligned gizmo views snap to orthographic; free orbiting uses perspective.
     @Volatile var isOrthographic = false
@@ -33,14 +34,14 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     @Volatile var gridPlaneAxis = 'Z'
 
     // Camera distance from the origin (zoom).
-    @Volatile var cameraDistance = 6.5f
+    @Volatile var cameraDistance = 7.47f
         set(value) {
             field = value.coerceIn(2f, 20f)
         }
 
     // Pan offset: shifts the camera + its look-at target together, sideways on screen (world X / world Z).
-    @Volatile var panX = 0f
-    @Volatile var panZ = 0f
+    @Volatile var panX = 0.05f
+    @Volatile var panZ = 0.24f
 
     fun zoomIn() {
         cameraDistance -= cameraDistance * 0.15f
