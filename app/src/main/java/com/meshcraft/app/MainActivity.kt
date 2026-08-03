@@ -101,6 +101,71 @@ class MainActivity : Activity() {
         AddMenuEntry("Image", R.drawable.ic_add_image)
     )
 
+    private val meshPrimitiveEntries = listOf(
+        AddMenuEntry("Plane", R.drawable.ic_mesh_plane),
+        AddMenuEntry("Cube", R.drawable.ic_mesh_cube),
+        AddMenuEntry("Circle", R.drawable.ic_mesh_circle),
+        AddMenuEntry("UV Sphere", R.drawable.ic_mesh_uv_sphere),
+        AddMenuEntry("Ico Sphere", R.drawable.ic_mesh_ico_sphere),
+        AddMenuEntry("Cylinder", R.drawable.ic_mesh_cylinder),
+        AddMenuEntry("Cone", R.drawable.ic_mesh_cone),
+        AddMenuEntry("Torus", R.drawable.ic_mesh_torus),
+        AddMenuEntry("Grid", R.drawable.ic_mesh_grid),
+        AddMenuEntry("Monkey", R.drawable.ic_mesh_monkey)
+    )
+
+    private val curvePrimitiveEntries = listOf(
+        AddMenuEntry("Bézier", R.drawable.ic_curve_bezier),
+        AddMenuEntry("Circle", R.drawable.ic_curve_circle),
+        AddMenuEntry("Nurbs Curve", R.drawable.ic_curve_nurbs_curve),
+        AddMenuEntry("Nurbs Circle", R.drawable.ic_curve_nurbs_circle),
+        AddMenuEntry("Path", R.drawable.ic_curve_path)
+    )
+
+    /**
+     * Nurbs Curve / Nurbs Circle aca son objetos distintos a los del menu Curve (mismo nombre,
+     * pero flavor Surface) - por eso usan sus propios recursos ic_surface_nurbs_*.
+     */
+    private val surfacePrimitiveEntries = listOf(
+        AddMenuEntry("Nurbs Curve", R.drawable.ic_surface_nurbs_curve),
+        AddMenuEntry("Nurbs Circle", R.drawable.ic_surface_nurbs_circle),
+        AddMenuEntry("Nurbs Surface", R.drawable.ic_surface_nurbs_surface),
+        AddMenuEntry("Nurbs Cylinder", R.drawable.ic_surface_nurbs_cylinder),
+        AddMenuEntry("Nurbs Sphere", R.drawable.ic_surface_nurbs_sphere),
+        AddMenuEntry("Nurbs Torus", R.drawable.ic_surface_nurbs_torus)
+    )
+
+    private val metaballPrimitiveEntries = listOf(
+        AddMenuEntry("Ball", R.drawable.ic_metaball_ball),
+        AddMenuEntry("Capsule", R.drawable.ic_metaball_capsule),
+        AddMenuEntry("Plane", R.drawable.ic_metaball_plane),
+        AddMenuEntry("Ellipsoid", R.drawable.ic_metaball_ellipsoid),
+        AddMenuEntry("Cube", R.drawable.ic_metaball_cube)
+    )
+
+    private val greasePencilPrimitiveEntries = listOf(
+        AddMenuEntry("Blank", R.drawable.ic_grease_pencil_blank),
+        AddMenuEntry("Stroke", R.drawable.ic_grease_pencil_stroke),
+        AddMenuEntry("Monkey", R.drawable.ic_grease_pencil_monkey)
+    )
+
+    private val emptyPrimitiveEntries = listOf(
+        AddMenuEntry("Plain Axes", R.drawable.ic_empty_plain_axes),
+        AddMenuEntry("Arrows", R.drawable.ic_empty_arrows),
+        AddMenuEntry("Single Arrow", R.drawable.ic_empty_single_arrow),
+        AddMenuEntry("Circle", R.drawable.ic_empty_circle),
+        AddMenuEntry("Cube", R.drawable.ic_empty_cube),
+        AddMenuEntry("Sphere", R.drawable.ic_empty_sphere),
+        AddMenuEntry("Cone", R.drawable.ic_empty_cone)
+    )
+
+    private val imagePrimitiveEntries = listOf(
+        AddMenuEntry("Reference", R.drawable.ic_image_reference),
+        AddMenuEntry("Background", R.drawable.ic_image_background),
+        AddMenuEntry("Mesh Plane", R.drawable.ic_image_mesh_plane),
+        AddMenuEntry("Empty Image", R.drawable.ic_image_empty_image)
+    )
+
     /**
      * Contenido de Layout > Object: todo como filas simples, sin submenu (decisión del usuario).
      * Se sacó "Quick Effects" (dependia de Particles, fuera de alcance) y ademas Asset, Constraints,
@@ -501,6 +566,48 @@ class MainActivity : Activity() {
         })
 
         for (entry in addMenuEntries) {
+            if (entry.label == "Mesh") {
+                menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                    renderMeshPrimitivesSubmenu(menuColumn, popup)
+                })
+                continue
+            }
+            if (entry.label == "Curve") {
+                menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                    renderCurvePrimitivesSubmenu(menuColumn, popup)
+                })
+                continue
+            }
+            if (entry.label == "Surface") {
+                menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                    renderSurfacePrimitivesSubmenu(menuColumn, popup)
+                })
+                continue
+            }
+            if (entry.label == "Metaball") {
+                menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                    renderMetaballPrimitivesSubmenu(menuColumn, popup)
+                })
+                continue
+            }
+            if (entry.label == "Grease Pencil") {
+                menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                    renderGreasePencilPrimitivesSubmenu(menuColumn, popup)
+                })
+                continue
+            }
+            if (entry.label == "Empty") {
+                menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                    renderEmptyPrimitivesSubmenu(menuColumn, popup)
+                })
+                continue
+            }
+            if (entry.label == "Image") {
+                menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                    renderImagePrimitivesSubmenu(menuColumn, popup)
+                })
+                continue
+            }
             menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
                 popup.dismiss()
                 onAddMenuAction(entry.label)
@@ -548,6 +655,125 @@ class MainActivity : Activity() {
 
         row.setOnClickListener { onClick() }
         return row
+    }
+
+    /** Submenu de primitivas dentro de Add > Mesh, mismo patron que el resto de Add (placeholder). */
+    private fun renderMeshPrimitivesSubmenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderLayoutAddMenu(menuColumn, popup)
+        })
+        for (entry in meshPrimitiveEntries) {
+            menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                popup.dismiss()
+                onAddMenuAction(entry.label)
+            })
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Submenu de primitivas dentro de Add > Curve, mismo patron que renderMeshPrimitivesSubmenu. */
+    private fun renderCurvePrimitivesSubmenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderLayoutAddMenu(menuColumn, popup)
+        })
+        for (entry in curvePrimitiveEntries) {
+            menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                popup.dismiss()
+                onAddMenuAction(entry.label)
+            })
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Submenu de primitivas dentro de Add > Surface, mismo patron que renderMeshPrimitivesSubmenu. */
+    private fun renderSurfacePrimitivesSubmenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderLayoutAddMenu(menuColumn, popup)
+        })
+        for (entry in surfacePrimitiveEntries) {
+            menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                popup.dismiss()
+                onAddMenuAction(entry.label)
+            })
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Submenu de primitivas dentro de Add > Metaball, mismo patron que renderMeshPrimitivesSubmenu. */
+    private fun renderMetaballPrimitivesSubmenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderLayoutAddMenu(menuColumn, popup)
+        })
+        for (entry in metaballPrimitiveEntries) {
+            menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                popup.dismiss()
+                onAddMenuAction(entry.label)
+            })
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Submenu de primitivas dentro de Add > Grease Pencil, mismo patron que renderMeshPrimitivesSubmenu. */
+    private fun renderGreasePencilPrimitivesSubmenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderLayoutAddMenu(menuColumn, popup)
+        })
+        for (entry in greasePencilPrimitiveEntries) {
+            menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                popup.dismiss()
+                onAddMenuAction(entry.label)
+            })
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Submenu de primitivas dentro de Add > Empty, mismo patron que renderMeshPrimitivesSubmenu. */
+    private fun renderEmptyPrimitivesSubmenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderLayoutAddMenu(menuColumn, popup)
+        })
+        for (entry in emptyPrimitiveEntries) {
+            menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                popup.dismiss()
+                onAddMenuAction(entry.label)
+            })
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Submenu de primitivas dentro de Add > Image, mismo patron que renderMeshPrimitivesSubmenu. */
+    private fun renderImagePrimitivesSubmenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderLayoutAddMenu(menuColumn, popup)
+        })
+        for (entry in imagePrimitiveEntries) {
+            menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                popup.dismiss()
+                onAddMenuAction(entry.label)
+            })
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
     }
 
     private fun onAddMenuAction(action: String) {
