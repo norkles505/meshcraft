@@ -20,6 +20,22 @@ class MyGLSurfaceView(context: Context) : GLSurfaceView(context) {
     var onRotationChanged: (() -> Unit)? = null
     /** Se dispara en ACTION_UP si el dedo no se movio mas que tapMoveThreshold - usado para seleccion de objetos. */
     var onTap: ((Float, Float) -> Unit)? = null
+    /**
+     * Se dispara en cada ACTION_MOVE con el delta de pantalla (dx, dy), ANTES de la logica de
+     * rotar/pan camara. Debe devolver true si el arrastre ya fue manejado (por ejemplo, moviendo
+     * el objeto seleccionado con la herramienta Move de Layout) - en ese caso la vista no rota ni
+     * hace pan. A proposito no depende de isLocked: el candado de rotacion es sobre la camara, no
+     * sobre mover objetos.
+     */
+    var onDragMove: ((Float, Float) -> Boolean)? = null
+    /**
+     * Se dispara en ACTION_DOWN, antes que cualquier otra logica - usado para el hit-test del
+     * gizmo de ejes (ver MainActivity.onViewportDragStart): si el dedo toco una flecha, el
+     * arrastre que sigue queda restringido a ese eje.
+     */
+    var onDragStart: ((Float, Float) -> Unit)? = null
+    /** Se dispara en ACTION_UP, antes de evaluar si fue un tap - usado para soltar el eje bloqueado del gizmo. */
+    var onDragEnd: (() -> Unit)? = null
     var touchMode: TouchMode = TouchMode.ROTATE
     var isLocked: Boolean = false
 
@@ -38,12 +54,16 @@ class MyGLSurfaceView(context: Context) : GLSurfaceView(context) {
             MotionEvent.ACTION_DOWN -> {
                 downX = x
                 downY = y
+                onDragStart?.invoke(x, y)
             }
             MotionEvent.ACTION_MOVE -> {
-                if (!isLocked) {
-                    val dx = x - previousX
-                    val dy = y - previousY
+                val dx = x - previousX
+                val dy = y - previousY
 
+                val handledByDrag = onDragMove?.invoke(dx, dy) ?: false
+                if (handledByDrag) {
+                    requestRender()
+                } else if (!isLocked) {
                     if (touchMode == TouchMode.ROTATE) {
                         renderer.angleY += dx * 0.5f
                         renderer.angleX += dy * 0.5f
@@ -60,6 +80,7 @@ class MyGLSurfaceView(context: Context) : GLSurfaceView(context) {
                 }
             }
             MotionEvent.ACTION_UP -> {
+                onDragEnd?.invoke()
                 val moved = hypot((x - downX).toDouble(), (y - downY).toDouble())
                 if (moved < tapMoveThreshold) {
                     onTap?.invoke(x, y)

@@ -26,6 +26,7 @@ class MainActivity : Activity() {
 
     private lateinit var glView: MyGLSurfaceView
     private lateinit var gizmoView: GizmoView
+    private lateinit var gizmoLabelView: GizmoLabelView
 
     private lateinit var handButton: ImageView
     private lateinit var lockButton: ImageView
@@ -54,6 +55,14 @@ class MainActivity : Activity() {
 
     private var currentMode: AppMode = AppMode.LAYOUT
     private var currentLayoutTool: LayoutTool = LayoutTool.SELECT
+
+    /**
+     * Eje al que quedo restringido el arrastre actual (X/Y/Z), si empezo tocando el gizmo (ver
+     * onViewportDragStart) - null si el arrastre es libre. Aplica con Move (flechas, ver
+     * hitTestGizmoAxis) y Rotate (anillos, ver hitTestGizmoRotateAxis) activos; Scale por eje
+     * queda para despues (ver charla con el usuario).
+     */
+    private var axisLocked: Char? = null
 
     private var modeMenuPopup: PopupWindow? = null
 
@@ -320,12 +329,16 @@ class MainActivity : Activity() {
 
         glView = MyGLSurfaceView(this)
         gizmoView = GizmoView(this)
+        gizmoLabelView = GizmoLabelView(this)
 
         gizmoView.angleXProvider = { glView.renderer.angleX }
         gizmoView.angleYProvider = { glView.renderer.angleY }
         glView.onRotationChanged = { gizmoView.invalidate() }
         gizmoView.onAxisSelected = { targetX, targetY, axisChar -> animateCameraTo(targetX, targetY, axisChar) }
         glView.onTap = { x, y -> onViewportTap(x, y) }
+        glView.onDragMove = { dx, dy -> onViewportDragMove(dx, dy) }
+        glView.onDragStart = { x, y -> onViewportDragStart(x, y) }
+        glView.onDragEnd = { onViewportDragEnd() }
 
         val root = FrameLayout(this)
         root.addView(
@@ -337,6 +350,7 @@ class MainActivity : Activity() {
         )
 
         val density = resources.displayMetrics.density
+        root.addView(gizmoLabelView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         val gizmoSize = (68 * density).toInt()
         val margin = (16 * density).toInt()
         val gizmoParams = FrameLayout.LayoutParams(gizmoSize, gizmoSize)
@@ -1383,10 +1397,19 @@ class MainActivity : Activity() {
     }
 
     private fun setLayoutTool(tool: LayoutTool) {
+        // El gizmo se muestra con Move (flechas) y Rotate (anillos) - las dos herramientas que ya
+        // tienen arrastre restringido a eje implementado. Scale por eje queda para despues, requiere
+        // cambios al modelo de datos (scale float -> scaleX/Y/Z) - ver charla con el usuario.
+        glView.renderer.gizmoMode = when (tool) {
+            LayoutTool.MOVE -> GizmoMode.MOVE
+            LayoutTool.ROTATE -> GizmoMode.ROTATE
+            else -> null
+        }
         currentLayoutTool = tool
         updateLayoutToolHighlight()
-        // TODO: conectar Move/Rotate/Scale a su logica real de gestos una vez que exista soporte
-        // de arrastre sobre el objeto seleccionado (Select ya funciona via onViewportTap).
+        // Move/Rotate/Scale ya funcionan via onViewportDragMove/glView.onDragMove (libre, o
+        // restringido a eje si el gizmo esta activo - ver onViewportDragStart/axisLocked);
+        // Select via onViewportTap.
     }
 
     private fun updateLayoutToolHighlight() {
@@ -1397,15 +1420,93 @@ class MainActivity : Activity() {
     }
 
     /**
+     * ACTION_DOWN en el viewport: si estamos en Layout con Move o Rotate activos y hay un objeto
+     * seleccionado, intenta el hit-test contra el gizmo correspondiente (flechas para Move via
+     * hitTestGizmoAxis, anillos para Rotate via hitTestGizmoRotateAxis). Si el dedo toco el gizmo,
+     * el arrastre que sigue queda restringido a ese eje (ver onViewportDragMove); si no, cae al
+     * gesto libre de siempre.
+     */
+    private fun onViewportDragStart(x: Float, y: Float) {
+        axisLocked = null
+        if (currentMode != AppMode.LAYOUT) return
+        axisLocked = when (currentLayoutTool) {
+            LayoutTool.MOVE -> glView.renderer.hitTestGizmoAxis(x, y)
+            LayoutTool.ROTATE -> glView.renderer.hitTestGizmoRotateAxis(x, y)
+            else -> null
+        }
+        glView.renderer.activeRotateAxis = null
+        gizmoLabelView.labelText = null
+        if (currentLayoutTool == LayoutTool.ROTATE && axisLocked != null) {
+            val axisNow = axisLocked!!
+            glView.renderer.activeRotateAxis = axisNow
+            val anchor = glView.renderer.computeRotateLabelAnchor()
+            if (anchor != null) {
+                gizmoLabelView.labelText = axisNow.toString()
+                gizmoLabelView.labelX = anchor[0]
+                gizmoLabelView.labelY = anchor[1]
+            }
+        }
+        gizmoLabelView.invalidate()
+    }
+    /** ACTION_UP en el viewport: suelta el eje bloqueado, sea cual sea la herramienta activa - tambien limpia el resaltado del anillo agarrado (activeRotateAxis) y la etiqueta de texto, si habia una rotacion restringida en curso. */
+    private fun onViewportDragEnd() {
+        axisLocked = null
+        glView.renderer.activeRotateAxis = null
+        gizmoLabelView.labelText = null
+        gizmoLabelView.invalidate()
+    }
+
+    /**
      * Tap en el viewport 3D: si estamos en Layout con la herramienta Select activa, intenta
      * seleccionar el objeto tocado (o deselecciona todo si el tap cae en espacio vacio, igual
-     * que en Blender). Move/Rotate/Scale con gestos reales sobre el objeto queda para mas adelante.
+     * que en Blender). Move/Rotate/Scale ya tienen su propio gesto de arrastre (ver
+     * onViewportDragMove).
      */
     private fun onViewportTap(x: Float, y: Float) {
         if (currentMode != AppMode.LAYOUT) return
         if (currentLayoutTool != LayoutTool.SELECT) return
         glView.renderer.selectObjectAt(x, y)
         glView.requestRender()
+    }
+
+    /**
+     * Arrastre en el viewport 3D: si estamos en Layout con Move, Rotate o Scale activos, aplica
+     * esa transformacion al objeto seleccionado en vez de rotar la camara (que es el
+     * comportamiento por defecto del gesto, ver MyGLSurfaceView.onDragMove). Move y Rotate quedan
+     * restringidos a un eje si el arrastre empezo tocando el gizmo (ver onViewportDragStart /
+     * axisLocked); si no, caen al gesto libre de siempre. Scale sigue siendo siempre libre (su
+     * gizmo por eje queda para despues). Si no hay ningun objeto seleccionado, el arrastre no hace
+     * nada - a proposito no cae a rotar la camara, para que quede claro que estas en una de estas
+     * herramientas sin nada para transformar. Devuelve true (arrastre consumido) siempre que una
+     * de las tres este activa, se haya transformado algo o no.
+     */
+    private fun onViewportDragMove(dx: Float, dy: Float): Boolean {
+        if (currentMode != AppMode.LAYOUT) return false
+        return when (currentLayoutTool) {
+            LayoutTool.MOVE -> {
+                val axis = axisLocked
+                if (axis != null) {
+                    glView.renderer.moveSelectedObjectOnAxis(dx, dy, axis)
+                } else {
+                    glView.renderer.moveSelectedObject(dx, dy)
+                }
+                true
+            }
+            LayoutTool.ROTATE -> {
+                val axis = axisLocked
+                if (axis != null) {
+                    glView.renderer.rotateSelectedObjectOnAxis(dx, dy, axis)
+                } else {
+                    glView.renderer.rotateSelectedObject(dx, dy)
+                }
+                true
+            }
+            LayoutTool.SCALE -> {
+                glView.renderer.scaleSelectedObject(dy)
+                true
+            }
+            else -> false
+        }
     }
 
     private fun setMode(mode: AppMode) {

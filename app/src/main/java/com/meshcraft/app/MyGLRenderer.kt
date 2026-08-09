@@ -6,6 +6,7 @@ import android.opengl.Matrix
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
+import kotlin.math.sqrt
 
 class MyGLRenderer : GLSurfaceView.Renderer {
 
@@ -13,6 +14,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     private lateinit var gridXY: Grid
     private lateinit var gridXZ: Grid
     private lateinit var gridYZ: Grid
+    private lateinit var gizmo: Gizmo3D
 
     /**
      * Objetos en la escena. Arranca con un solo cubo en el origen, ya seleccionado
@@ -41,6 +43,32 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     // Which axis the camera is currently looking down: 'Z' -> ground (XY) grid, 'Y' -> XZ wall, 'X' -> YZ wall.
     @Volatile var gridPlaneAxis = 'Z'
 
+    /**
+     * Que gizmo de transformacion por eje se dibuja sobre el objeto seleccionado - null si ninguno.
+     * MainActivity lo setea segun la herramienta activa (ver setLayoutTool): Move -> GizmoMode.MOVE,
+     * Rotate -> GizmoMode.ROTATE. Scale todavia no tiene su version restringida a eje (ver charla
+     * con el usuario).
+     */
+    @Volatile var gizmoMode: GizmoMode? = null
+
+    /**
+     * Eje (X/Y/Z) del anillo de rotacion que se esta arrastrando ahora mismo - null si no hay
+     * arrastre en curso o si el arrastre es libre (no empezo tocando un anillo). MainActivity lo
+     * sincroniza en onViewportDragStart/onViewportDragEnd (mismo valor que axisLocked alla, solo
+     * que ahi es privado). Solo tiene efecto visual con gizmoMode == GizmoMode.ROTATE - ver
+     * onDrawFrame y Gizmo3D.draw.
+     */
+    @Volatile var activeRotateAxis: Char? = null
+
+    /**
+     * Direccion (mundo, normalizada) desde el centro del objeto hacia el punto donde el dedo tocO
+     * el anillo al empezar el arrastre - se calcula una sola vez en hitTestGizmoRotateAxis cuando
+     * el hit-test encuentra un eje, y se queda fija durante todo el gesto (no se actualiza en cada
+     * frame). La usa drawStartAngleMarker para dibujar la linea punteada de angulo de arranque, y
+     * computeRotateLabelAnchor para ubicar la etiqueta de texto del eje.
+     */
+    @Volatile var activeRotateStartDir: FloatArray? = null
+
     // Camera distance from the origin (zoom).
     @Volatile var cameraDistance = 7.47f
         set(value) {
@@ -50,6 +78,16 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     // Pan offset: shifts the camera + its look-at target together, sideways on screen (world X / world Z).
     @Volatile var panX = 0.05f
     @Volatile var panZ = 0.24f
+
+    /**
+     * Tamano del gizmo en unidades de mundo, recalculado por distancia de camara para que se vea
+     * de tamano constante en pantalla sin importar el zoom (mismo criterio que orthoSize en
+     * onDrawFrame). Unica fuente de verdad para el dibujo (onDrawFrame) y los hit-test
+     * (hitTestGizmoAxis, hitTestGizmoRotateAxis) - si diverge, el gizmo se ve en un lugar y se toca
+     * en otro.
+     */
+    private val gizmoScreenScale: Float
+        get() = cameraDistance * 0.15f
 
     /**
      * Agrega un cubo nuevo a la escena y lo deja seleccionado (mismo criterio que selectObjectAt:
@@ -63,6 +101,229 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         val newObject = SceneObject(id = nextObjectId++, selected = true)
         sceneObjects.add(newObject)
         return newObject
+    }
+
+    /**
+     * Calcula, para un delta de arrastre en pantalla, el delta equivalente en espacio mundo.
+     * Extraido de moveSelectedObject para reusarlo tambien en moveSelectedObjectOnAxis (arrastre
+     * restringido a un eje del gizmo) - misma logica en los dos casos, cambia solo que se hace
+     * despues con el resultado.
+     */
+    private fun computeWorldDragDelta(dxScreen: Float, dyScreen: Float): FloatArray {
+        // Misma escala que el pan de camara (ver MyGLSurfaceView), para que el movimiento se
+        // sienta igual de "rapido" en pantalla sin importar el nivel de zoom actual.
+        val moveScale = 0.01f * (cameraDistance / 6.5f)
+        val rightAmount = dxScreen * moveScale
+        val upAmount = -dyScreen * moveScale
+
+        val rotation = FloatArray(16)
+        Matrix.setIdentityM(rotation, 0)
+        Matrix.rotateM(rotation, 0, angleX, 1f, 0f, 0f)
+        Matrix.rotateM(rotation, 0, angleY, 0f, 0f, 1f)
+
+        val inverseRotation = FloatArray(16)
+        Matrix.transposeM(inverseRotation, 0, rotation, 0)
+
+        val screenDelta = floatArrayOf(rightAmount, 0f, upAmount, 1f)
+        val worldDelta = FloatArray(4)
+        Matrix.multiplyMV(worldDelta, 0, inverseRotation, 0, screenDelta, 0)
+        return worldDelta
+    }
+
+    /**
+     * Direccion (en espacio mundo) hacia donde mira la camara, calculada de la misma forma que
+     * computeWorldDragDelta: la camara nunca rota de verdad (lo que rota es el contenido via
+     * rotationMatrix), asi que su forward local (+Y, ver setLookAtM en onDrawFrame) se lleva a
+     * espacio mundo con la inversa de esa rotacion. Compartido por computeScreenTangentForAxis
+     * para saber "desde donde se esta mirando" el gizmo de rotacion.
+     */
+    private fun computeWorldViewDirection(): FloatArray {
+        val rotation = FloatArray(16)
+        Matrix.setIdentityM(rotation, 0)
+        Matrix.rotateM(rotation, 0, angleX, 1f, 0f, 0f)
+        Matrix.rotateM(rotation, 0, angleY, 0f, 0f, 1f)
+        val inverseRotation = FloatArray(16)
+        Matrix.transposeM(inverseRotation, 0, rotation, 0)
+        val localForward = floatArrayOf(0f, 1f, 0f, 0f)
+        val worldForward = FloatArray(4)
+        Matrix.multiplyMV(worldForward, 0, inverseRotation, 0, localForward, 0)
+        return floatArrayOf(worldForward[0], worldForward[1], worldForward[2])
+    }
+
+    /**
+     * Mueve el objeto seleccionado en el plano de camara (como arrastras en pantalla, igual que
+     * G libre en Blender): dxScreen/dyScreen son deltas de pantalla en pixeles. Como la camara
+     * nunca rota (lo que rota es el contenido via rotationMatrix, ver onDrawFrame), el eje derecha
+     * de camara es siempre el eje X del mundo y el eje arriba de camara siempre el eje Z del mundo;
+     * por eso el delta se arma directamente en esos ejes y se lo pasa por la rotacion inversa
+     * (transpuesta, al ser una matriz de rotacion pura) para que el objeto - que si esta rotado -
+     * termine moviendose en la direccion correcta sobre la pantalla.
+     * Devuelve false (y no hace nada) si no hay ningun objeto seleccionado.
+     */
+    fun moveSelectedObject(dxScreen: Float, dyScreen: Float): Boolean {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return false
+        val worldDelta = computeWorldDragDelta(dxScreen, dyScreen)
+        selected.posX += worldDelta[0]
+        selected.posY += worldDelta[1]
+        selected.posZ += worldDelta[2]
+        return true
+    }
+
+    /**
+     * Igual que moveSelectedObject, pero proyecta el delta de mundo sobre un solo eje (X/Y/Z)
+     * antes de aplicarlo - se usa cuando el arrastre empezo tocando una flecha del gizmo (ver
+     * MainActivity.onViewportDragStart, que llama a hitTestGizmoAxis en ACTION_DOWN).
+     * Devuelve false (y no hace nada) si no hay ningun objeto seleccionado.
+     */
+    fun moveSelectedObjectOnAxis(dxScreen: Float, dyScreen: Float, axis: Char): Boolean {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return false
+        val worldDelta = computeWorldDragDelta(dxScreen, dyScreen)
+
+        val axisDir = axisDirection(axis)
+        val projected = worldDelta[0] * axisDir[0] + worldDelta[1] * axisDir[1] + worldDelta[2] * axisDir[2]
+
+        selected.posX += axisDir[0] * projected
+        selected.posY += axisDir[1] * projected
+        selected.posZ += axisDir[2] * projected
+        return true
+    }
+
+    private fun axisDirection(axis: Char): FloatArray = when (axis) {
+        'X' -> floatArrayOf(1f, 0f, 0f)
+        'Y' -> floatArrayOf(0f, 1f, 0f)
+        else -> floatArrayOf(0f, 0f, 1f)
+    }
+
+    /**
+     * Rota el objeto seleccionado libre (sin eje restringido), con la misma convencion que la
+     * orbita de camara: dx horizontal gira alrededor del eje Z del mundo (rotZ, como angleY de
+     * camara), dy vertical gira alrededor del eje X del mundo (rotX, como angleX de camara). Se
+     * acumula sobre la rotacion actual del objeto - sin eje restringido; para eso ver
+     * rotateSelectedObjectOnAxis (gizmo de anillos).
+     * Devuelve false (y no hace nada) si no hay ningun objeto seleccionado.
+     */
+    fun rotateSelectedObject(dxScreen: Float, dyScreen: Float): Boolean {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return false
+        selected.rotZ += dxScreen * 0.5f
+        selected.rotX += dyScreen * 0.5f
+        return true
+    }
+
+    /**
+     * Rota el objeto seleccionado restringido a un solo eje (X/Y/Z) - se usa cuando el arrastre
+     * empezo tocando un anillo del gizmo (ver MainActivity.onViewportDragStart, que llama a
+     * hitTestGizmoRotateAxis en ACTION_DOWN). A diferencia de rotateSelectedObject (que reparte el
+     * delta en dx->rotZ / dy->rotX de forma fija), aca el delta de arrastre se proyecta sobre la
+     * tangente en pantalla del circulo de rotacion de ese eje (ver computeScreenTangentForAxis) -
+     * mismo resultado visual para X/Z que el gesto libre, pero generalizado para que Y (que no
+     * tiene una convencion fija de antes) tambien funcione, sin tener que casear por eje.
+     * Devuelve true si el arrastre fue consumido (haya rotado algo o no - p.ej. si el eje quedo de
+     * canto respecto de la camara, caso degenerado sin tangente definida).
+     */
+    fun rotateSelectedObjectOnAxis(dxScreen: Float, dyScreen: Float, axis: Char): Boolean {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return true
+        val center = floatArrayOf(selected.posX, selected.posY, selected.posZ)
+        val screenTangent = computeScreenTangentForAxis(center, axisDirection(axis)) ?: return true
+
+        // Misma sensibilidad que el rotate libre (dx/dy * 0.5).
+        val delta = (dxScreen * screenTangent[0] + dyScreen * screenTangent[1]) * 0.5f
+        when (axis) {
+            'X' -> selected.rotX += delta
+            'Y' -> selected.rotY += delta
+            else -> selected.rotZ += delta
+        }
+        return true
+    }
+
+    /**
+     * Direccion (normalizada, en pixeles de pantalla) en la que hay que arrastrar para rotar el
+     * objeto alrededor de axisDir, vista desde la camara actual: la tangente al circulo de
+     * rotacion es perpendicular tanto a la direccion de vista como al eje (cross product), y se
+     * proyecta a pantalla comparando dos puntos cercanos en esa direccion (ver
+     * projectWorldToScreen). Null en el caso degenerado de que el eje quede de canto respecto de
+     * la camara (viewDir paralelo a axisDir - el circulo se ve como una linea, sin tangente
+     * definida) o si la proyeccion a pantalla no esta disponible todavia (primer frame).
+     */
+    private fun computeScreenTangentForAxis(center: FloatArray, axisDir: FloatArray): FloatArray? {
+        val viewDir = computeWorldViewDirection()
+        val tangent = cross(viewDir, axisDir)
+        val tangentLen = sqrt(tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2])
+        if (tangentLen < 1e-4f) return null
+        val tangentUnit = floatArrayOf(tangent[0] / tangentLen, tangent[1] / tangentLen, tangent[2] / tangentLen)
+
+        val p0 = projectWorldToScreen(center[0], center[1], center[2]) ?: return null
+        val p1 = projectWorldToScreen(
+            center[0] + tangentUnit[0] * 0.05f,
+            center[1] + tangentUnit[1] * 0.05f,
+            center[2] + tangentUnit[2] * 0.05f
+        ) ?: return null
+
+        val screenDx = p1[0] - p0[0]
+        val screenDy = p1[1] - p0[1]
+        val screenLen = sqrt(screenDx * screenDx + screenDy * screenDy)
+        if (screenLen < 1e-4f) return null
+        return floatArrayOf(screenDx / screenLen, screenDy / screenLen)
+    }
+
+    private fun cross(a: FloatArray, b: FloatArray): FloatArray {
+        return floatArrayOf(
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]
+        )
+    }
+
+    /**
+     * Proyecta un punto de mundo a coordenadas de pantalla (pixeles, mismo sistema y-hacia-abajo
+     * que usan los eventos de touch) - inverso de screenPointToRay. Usa la matriz camara+orbita
+     * del ultimo frame dibujado (scratch), igual que screenPointToRay/hitTestGizmoAxis.
+     */
+    private fun projectWorldToScreen(worldX: Float, worldY: Float, worldZ: Float): FloatArray? {
+        if (viewportWidth <= 0 || viewportHeight <= 0) return null
+        val vpMatrix = FloatArray(16)
+        Matrix.multiplyMM(vpMatrix, 0, projectionMatrix, 0, scratch, 0)
+        val clip = FloatArray(4)
+        Matrix.multiplyMV(clip, 0, vpMatrix, 0, floatArrayOf(worldX, worldY, worldZ, 1f), 0)
+        if (abs(clip[3]) < 1e-6f) return null
+        val ndcX = clip[0] / clip[3]
+        val ndcY = clip[1] / clip[3]
+        val screenX = (ndcX + 1f) * 0.5f * viewportWidth
+        val screenY = (1f - ndcY) * 0.5f * viewportHeight
+        return floatArrayOf(screenX, screenY)
+    }
+
+    /**
+     * Punto de pantalla donde debe anclarse la etiqueta de texto (X/Y/Z) del anillo de rotacion
+     * activo (ver GizmoLabelView) - el extremo de la linea punteada de angulo de arranque (centro
+     * del objeto + direccion de arranque * radio del anillo, un poco mas afuera para no pisarse
+     * con la linea). Se llama una sola vez al empezar el arrastre (ver
+     * MainActivity.onViewportDragStart) porque esa direccion (activeRotateStartDir) queda fija
+     * durante todo el gesto - no hace falta recalcular cada frame. Null si no hay objeto
+     * seleccionado, no hay direccion de arranque guardada, o la proyeccion a pantalla no esta
+     * disponible todavia.
+     */
+    fun computeRotateLabelAnchor(): FloatArray? {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return null
+        val dir = activeRotateStartDir ?: return null
+        val ringWorldRadius = gizmoScreenScale * Gizmo3D.RING_RADIUS * 1.15f
+        return projectWorldToScreen(
+            selected.posX + dir[0] * ringWorldRadius,
+            selected.posY + dir[1] * ringWorldRadius,
+            selected.posZ + dir[2] * ringWorldRadius
+        )
+    }
+
+    /**
+     * Escala el objeto seleccionado libre (sin eje restringido): arrastre vertical (dyScreen)
+     * cambia la escala uniforme - arriba (dy negativo) agranda, abajo achica. Clampeada entre
+     * 0.1 y 10 para que no desaparezca ni crezca sin limite.
+     * Devuelve false (y no hace nada) si no hay ningun objeto seleccionado.
+     */
+    fun scaleSelectedObject(dyScreen: Float): Boolean {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return false
+        val scaleFactor = 1f - dyScreen * 0.005f
+        selected.scale = (selected.scale * scaleFactor).coerceIn(0.1f, 10f)
+        return true
     }
 
     fun zoomIn() {
@@ -80,6 +341,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         gridXY = Grid(GridPlane.XY)
         gridXZ = Grid(GridPlane.XZ)
         gridYZ = Grid(GridPlane.YZ)
+        gizmo = Gizmo3D()
 
         sceneObjects.clear()
         sceneObjects.add(SceneObject(id = nextObjectId++, selected = true))
@@ -127,25 +389,102 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         }
         grid.draw(mvpMatrix)
 
-        // Cada objeto se dibuja con su propia matriz (mvpMatrix comun de camara + traslacion propia).
+        // Cada objeto se dibuja con su propia matriz (mvpMatrix comun de camara + transform propia:
+        // traslacion, rotacion libre rotZ/rotX/rotY y escala uniforme - en ese orden, escala primero
+        // para que quede local al objeto antes de rotar/trasladar).
         val modelMatrix = FloatArray(16)
         val objMvpMatrix = FloatArray(16)
         for (obj in sceneObjects) {
             Matrix.setIdentityM(modelMatrix, 0)
             Matrix.translateM(modelMatrix, 0, obj.posX, obj.posY, obj.posZ)
+            Matrix.rotateM(modelMatrix, 0, obj.rotZ, 0f, 0f, 1f)
+            Matrix.rotateM(modelMatrix, 0, obj.rotX, 1f, 0f, 0f)
+            Matrix.rotateM(modelMatrix, 0, obj.rotY, 0f, 1f, 0f)
+            Matrix.scaleM(modelMatrix, 0, obj.scale, obj.scale, obj.scale)
             Matrix.multiplyMM(objMvpMatrix, 0, mvpMatrix, 0, modelMatrix, 0)
             cubeGeometry.draw(objMvpMatrix, obj.selected)
+        }
+
+        // Gizmo de transformacion sobre el objeto seleccionado: se dibuja SIN la rotacion/escala
+        // del objeto (siempre alineado a los ejes del mundo, "Global" orientation - igual que el
+        // default de Blender), solo trasladado a su posicion y escalado a tamano de pantalla
+        // constante. gizmoMode decide si se dibujan flechas (Move) o anillos (Rotate) - ver
+        // MainActivity.setLayoutTool. activeRotateAxis (sincronizado desde MainActivity.axisLocked)
+        // decide, dentro de Rotate, si se resalta un solo anillo agarrado o los 3 en su modo normal.
+        val mode = gizmoMode
+        if (mode != null) {
+            val selectedObj = sceneObjects.firstOrNull { it.selected }
+            if (selectedObj != null) {
+                val gizmoModel = FloatArray(16)
+                Matrix.setIdentityM(gizmoModel, 0)
+                Matrix.translateM(gizmoModel, 0, selectedObj.posX, selectedObj.posY, selectedObj.posZ)
+                Matrix.scaleM(gizmoModel, 0, gizmoScreenScale, gizmoScreenScale, gizmoScreenScale)
+                val gizmoMvpMatrix = FloatArray(16)
+                Matrix.multiplyMM(gizmoMvpMatrix, 0, mvpMatrix, 0, gizmoModel, 0)
+                gizmo.draw(
+                    gizmoMvpMatrix,
+                    mode,
+                    if (mode == GizmoMode.ROTATE) computeWorldViewDirection() else null,
+                    if (mode == GizmoMode.ROTATE) activeRotateAxis else null
+                )
+
+                // Anillo trackball (blanco, solo en Rotate y solo sin eje activo - con un anillo
+                // agarrado el trackball se oculta, igual que Blender oculta el resto del gizmo
+                // cuando estas arrastrando un eje puntual): billboard, siempre de cara a la camara
+                // sin importar la orbita - se logra multiplicando por la inversa de rotationMatrix
+                // (transpuesta, al ser una rotacion pura) antes de escalar. Representa el gesto de
+                // rotacion libre, que ya funciona via rotateSelectedObject.
+                if (mode == GizmoMode.ROTATE && activeRotateAxis == null) {
+                    val inverseOrbit = FloatArray(16)
+                    Matrix.transposeM(inverseOrbit, 0, rotationMatrix, 0)
+
+                    val translatePart = FloatArray(16)
+                    Matrix.setIdentityM(translatePart, 0)
+                    Matrix.translateM(translatePart, 0, selectedObj.posX, selectedObj.posY, selectedObj.posZ)
+
+                    val trackballModel = FloatArray(16)
+                    Matrix.multiplyMM(trackballModel, 0, translatePart, 0, inverseOrbit, 0)
+                    Matrix.scaleM(trackballModel, 0, gizmoScreenScale, gizmoScreenScale, gizmoScreenScale)
+
+                    val trackballMvpMatrix = FloatArray(16)
+                    Matrix.multiplyMM(trackballMvpMatrix, 0, mvpMatrix, 0, trackballModel, 0)
+                    gizmo.drawTrackballRing(trackballMvpMatrix)
+                }
+
+                // Con un anillo agarrado: linea infinita del eje + marca de angulo de arranque +
+                // crucecita del pivote - las 3 piezas extra que replican la referencia visual de
+                // Blender (ver charla con el usuario). Todo en el color propio del eje activo.
+                if (mode == GizmoMode.ROTATE && activeRotateAxis != null) {
+                    val axisChar = activeRotateAxis!!
+                    val axisColor = gizmo.colorForAxis(axisChar)
+
+                    // Linea infinita: traslacion al objeto SIN el escalado de gizmoScreenScale
+                    // (su longitud se maneja en unidades de mundo reales dentro de Gizmo3D).
+                    val translateOnlyModel = FloatArray(16)
+                    Matrix.setIdentityM(translateOnlyModel, 0)
+                    Matrix.translateM(translateOnlyModel, 0, selectedObj.posX, selectedObj.posY, selectedObj.posZ)
+                    val lineMvpMatrix = FloatArray(16)
+                    Matrix.multiplyMM(lineMvpMatrix, 0, mvpMatrix, 0, translateOnlyModel, 0)
+                    gizmo.drawInfiniteAxisLine(lineMvpMatrix, axisDirection(axisChar), axisColor)
+
+                    val startDir = activeRotateStartDir
+                    if (startDir != null) {
+                        gizmo.drawStartAngleMarker(gizmoMvpMatrix, startDir, axisColor)
+                    }
+                    gizmo.drawCenterCrosshair(gizmoMvpMatrix)
+                }
+            }
         }
     }
 
     /**
-     * Convierte un tap en pantalla (coordenadas de vista, no NDC) en un rayo 3D y selecciona
-     * el objeto mas cercano que intersecta. Si no hay hit, deselecciona todo (igual que tocar
-     * espacio vacio en Blender). Usa la matriz camara+orbita del ultimo frame dibujado (scratch);
-     * no incluye la traslacion de cada objeto, que se resta adentro de intersectAABB.
+     * Convierte un punto de pantalla (coordenadas de vista, no NDC) en un rayo 3D (origen +
+     * direccion), usando la matriz camara+orbita del ultimo frame dibujado (scratch). Compartido
+     * por selectObjectAt (seleccion de objetos) y los hit-test del gizmo (hitTestGizmoAxis,
+     * hitTestGizmoRotateAxis).
      */
-    fun selectObjectAt(screenX: Float, screenY: Float) {
-        if (viewportWidth <= 0 || viewportHeight <= 0) return
+    private fun screenPointToRay(screenX: Float, screenY: Float): Pair<FloatArray, FloatArray>? {
+        if (viewportWidth <= 0 || viewportHeight <= 0) return null
 
         val ndcX = (2f * screenX / viewportWidth) - 1f
         val ndcY = 1f - (2f * screenY / viewportHeight)
@@ -153,7 +492,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         val vpMatrix = FloatArray(16)
         Matrix.multiplyMM(vpMatrix, 0, projectionMatrix, 0, scratch, 0)
         val invMatrix = FloatArray(16)
-        if (!Matrix.invertM(invMatrix, 0, vpMatrix, 0)) return
+        if (!Matrix.invertM(invMatrix, 0, vpMatrix, 0)) return null
 
         val nearPoint = floatArrayOf(ndcX, ndcY, -1f, 1f)
         val farPoint = floatArrayOf(ndcX, ndcY, 1f, 1f)
@@ -170,11 +509,20 @@ class MyGLRenderer : GLSurfaceView.Renderer {
             farWorld[1] - nearWorld[1],
             farWorld[2] - nearWorld[2]
         )
+        return rayOrigin to rayDir
+    }
+
+    /**
+     * Convierte un tap en pantalla en un rayo 3D y selecciona el objeto mas cercano que
+     * intersecta. Si no hay hit, deselecciona todo (igual que tocar espacio vacio en Blender).
+     */
+    fun selectObjectAt(screenX: Float, screenY: Float) {
+        val (rayOrigin, rayDir) = screenPointToRay(screenX, screenY) ?: return
 
         var hitObject: SceneObject? = null
         var closestT = Float.MAX_VALUE
         for (obj in sceneObjects) {
-            val t = intersectAABB(rayOrigin, rayDir, obj.posX, obj.posY, obj.posZ)
+            val t = intersectAABB(rayOrigin, rayDir, obj.posX, obj.posY, obj.posZ, obj.scale)
             if (t != null && t < closestT) {
                 closestT = t
                 hitObject = obj
@@ -186,9 +534,129 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         }
     }
 
-    /** Interseccion rayo-caja axis-aligned (metodo slab), caja de medio-lado 0.5 centrada en (objX, objY, objZ). */
-    private fun intersectAABB(rayOrigin: FloatArray, rayDir: FloatArray, objX: Float, objY: Float, objZ: Float): Float? {
-        val halfExtent = 0.5f
+    /**
+     * Hit-test del gizmo de Move: para el objeto seleccionado, calcula la distancia minima entre
+     * el rayo del tap y cada uno de los 3 segmentos de eje (en espacio mundo, con el mismo tamano
+     * de pantalla constante que usa el dibujo - ver gizmoScreenScale), y devuelve el eje mas
+     * cercano si esta dentro del radio de tolerancia. Devuelve null si no hay objeto seleccionado
+     * o si ningun eje esta lo bastante cerca (en ese caso el arrastre cae al gesto libre normal).
+     */
+    fun hitTestGizmoAxis(screenX: Float, screenY: Float): Char? {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return null
+        val (rayOrigin, rayDir) = screenPointToRay(screenX, screenY) ?: return null
+
+        // Unica fuente de verdad: Gizmo3D.SHAFT_LENGTH / TIP_LENGTH (companion object alla) - ya
+        // no hay numeros duplicados a mano entre dibujo y hit-test.
+        val segStart = floatArrayOf(selected.posX, selected.posY, selected.posZ)
+        // (ver companion object de Gizmo3D, arriba, para SHAFT_LENGTH/TIP_LENGTH)
+        val axisLength = gizmoScreenScale * (Gizmo3D.SHAFT_LENGTH + Gizmo3D.TIP_LENGTH)
+        val hitRadius = gizmoScreenScale * 0.18f
+
+        var bestAxis: Char? = null
+        var bestDist = Float.MAX_VALUE
+        for (axisChar in listOf('X', 'Y', 'Z')) {
+            val dist = closestDistanceRayToSegment(rayOrigin, rayDir, segStart, axisDirection(axisChar), axisLength)
+            if (dist < hitRadius && dist < bestDist) {
+                bestDist = dist
+                bestAxis = axisChar
+            }
+        }
+        return bestAxis
+    }
+
+    /**
+     * Hit-test del gizmo de Rotate: para el objeto seleccionado, y para cada uno de los 3 anillos,
+     * interseca el rayo del tap con el plano perpendicular a ese eje que pasa por el centro del
+     * objeto (rayo-plano, cerrado, sin iteracion), y compara la distancia del punto de interseccion
+     * al centro contra el radio del anillo (Gizmo3D.RING_RADIUS, escalado por gizmoScreenScale -
+     * unica fuente de verdad, ya no hay numero duplicado a mano aca). Devuelve el anillo mas cercano dentro de la
+     * tolerancia, o null si no hay objeto seleccionado, el eje quedo de canto respecto de la camara
+     * (rayo paralelo al plano - interseccion indefinida) o ningun anillo esta lo bastante cerca.
+     * De paso, si encuentra un hit, guarda en activeRotateStartDir la direccion (mundo, normalizada)
+     * desde el centro hasta el punto tocado - la usan drawStartAngleMarker y
+     * computeRotateLabelAnchor para la linea punteada y la etiqueta de texto del eje agarrado.
+     */
+    fun hitTestGizmoRotateAxis(screenX: Float, screenY: Float): Char? {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return null
+        val (rayOrigin, rayDir) = screenPointToRay(screenX, screenY) ?: return null
+
+        val center = floatArrayOf(selected.posX, selected.posY, selected.posZ)
+        val ringRadius = gizmoScreenScale * Gizmo3D.RING_RADIUS
+        val tolerance = gizmoScreenScale * 0.15f
+
+        var bestAxis: Char? = null
+        var bestDist = Float.MAX_VALUE
+        var bestDir: FloatArray? = null
+        for (axisChar in listOf('X', 'Y', 'Z')) {
+            val normal = axisDirection(axisChar)
+            val denom = dot(rayDir, normal)
+            if (abs(denom) < 1e-6f) continue
+
+            val diff = floatArrayOf(center[0] - rayOrigin[0], center[1] - rayOrigin[1], center[2] - rayOrigin[2])
+            val t = dot(diff, normal) / denom
+            if (t < 0f) continue
+
+            val hitPoint = floatArrayOf(
+                rayOrigin[0] + rayDir[0] * t,
+                rayOrigin[1] + rayDir[1] * t,
+                rayOrigin[2] + rayDir[2] * t
+            )
+            val dx = hitPoint[0] - center[0]
+            val dy = hitPoint[1] - center[1]
+            val dz = hitPoint[2] - center[2]
+            val distFromCenter = sqrt(dx * dx + dy * dy + dz * dz)
+            val distFromRing = abs(distFromCenter - ringRadius)
+
+            if (distFromRing < tolerance && distFromRing < bestDist) {
+                bestDist = distFromRing
+                bestAxis = axisChar
+                bestDir = if (distFromCenter > 1e-4f) floatArrayOf(dx / distFromCenter, dy / distFromCenter, dz / distFromCenter) else null
+            }
+        }
+        if (bestAxis != null) activeRotateStartDir = bestDir
+        return bestAxis
+    }
+
+    /**
+     * Distancia minima entre una recta (rayOrigin + t*rayDir, t libre) y un segmento
+     * (segStart + s*segDir, s clampeado a [0, segLength]) - formula estandar de distancia
+     * minima entre dos rectas en 3D, resuelta para el punto mas cercano del rayo una vez fijado
+     * el parametro clampeado del segmento.
+     */
+    private fun closestDistanceRayToSegment(
+        rayOrigin: FloatArray, rayDir: FloatArray,
+        segStart: FloatArray, segDir: FloatArray, segLength: Float
+    ): Float {
+        val r = FloatArray(3) { rayOrigin[it] - segStart[it] }
+        val a = dot(rayDir, rayDir)
+        val b = dot(rayDir, segDir)
+        val c = dot(rayDir, r)
+        val e = dot(segDir, segDir)
+        val f = dot(segDir, r)
+        val denom = a * e - b * b
+
+        var s = if (denom > 1e-8f) (a * f - b * c) / denom else if (e > 1e-8f) f / e else 0f
+        s = s.coerceIn(0f, segLength)
+        val t = if (a > 1e-8f) maxOf(0f, (b * s - c) / a) else 0f
+
+        val closestOnRay = FloatArray(3) { rayOrigin[it] + rayDir[it] * t }
+        val closestOnSeg = FloatArray(3) { segStart[it] + segDir[it] * s }
+        val dx = closestOnRay[0] - closestOnSeg[0]
+        val dy = closestOnRay[1] - closestOnSeg[1]
+        val dz = closestOnRay[2] - closestOnSeg[2]
+        return sqrt(dx * dx + dy * dy + dz * dz)
+    }
+
+    private fun dot(a: FloatArray, b: FloatArray) = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+    /**
+     * Interseccion rayo-caja axis-aligned (metodo slab), caja de medio-lado 0.5*scale centrada
+     * en (objX, objY, objZ). Ignora rotZ/rotX a proposito (bounding box sin rotar, mas grande de
+     * lo justo cuando el objeto esta rotado) - suficiente para seleccionar por ahora, afinar esto
+     * requeriria un OBB (oriented bounding box) o transformar el rayo al espacio local del objeto.
+     */
+    private fun intersectAABB(rayOrigin: FloatArray, rayDir: FloatArray, objX: Float, objY: Float, objZ: Float, scale: Float): Float? {
+        val halfExtent = 0.5f * scale
         val minB = floatArrayOf(objX - halfExtent, objY - halfExtent, objZ - halfExtent)
         val maxB = floatArrayOf(objX + halfExtent, objY + halfExtent, objZ + halfExtent)
         var tMin = -Float.MAX_VALUE
