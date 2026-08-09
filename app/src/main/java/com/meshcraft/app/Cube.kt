@@ -114,7 +114,12 @@ class Cube {
         lineProgram = buildProgram(lineVertexShaderCode, lineFragmentShaderCode)
     }
 
-    fun draw(mvpMatrix: FloatArray) {
+    /**
+     * selected: si es false, se dibujan las caras solidas pero se salta el contorno naranja.
+     * Antes el contorno se dibujaba siempre (sin condicion); ahora depende del estado real
+     * de seleccion del SceneObject que representa este cubo.
+     */
+    fun draw(mvpMatrix: FloatArray, selected: Boolean) {
         // Solid shaded faces
         GLES20.glUseProgram(faceProgram)
 
@@ -134,7 +139,9 @@ class Cube {
         GLES20.glDisableVertexAttribArray(posHandle)
         GLES20.glDisableVertexAttribArray(normalHandle)
 
-        // Orange selection outline
+        // Orange selection outline - solo si el objeto esta seleccionado
+        if (!selected) return
+
         GLES20.glUseProgram(lineProgram)
 
         val linePosHandle = GLES20.glGetAttribLocation(lineProgram, "vPosition")

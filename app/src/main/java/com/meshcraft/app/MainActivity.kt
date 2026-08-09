@@ -41,6 +41,17 @@ class MainActivity : Activity() {
     private lateinit var rotateToolBtn: ImageView
     private lateinit var scaleToolBtn: ImageView
 
+    private lateinit var modelingToolWrapper: View
+    private lateinit var modelingToolColumnInner: LinearLayout
+    private lateinit var modelingSelectBtn: ImageView
+    private lateinit var modelingMoveBtn: ImageView
+    private lateinit var modelingRotateBtn: ImageView
+    private lateinit var modelingScaleBtn: ImageView
+    private var currentModelingTool: LayoutTool = LayoutTool.SELECT
+    /** Herramienta "extra" activa (Extrude Region, Bevel, etc.) - null si esta activa una de las 4 basicas. */
+    private var currentModelingExtraTool: String? = null
+    private val modelingExtraToolButtons = mutableMapOf<String, ImageView>()
+
     private var currentMode: AppMode = AppMode.LAYOUT
     private var currentLayoutTool: LayoutTool = LayoutTool.SELECT
 
@@ -50,10 +61,54 @@ class MainActivity : Activity() {
     // Por ahora solo Layout tiene contenido definido; Modeling y UV Editing quedan pendientes.
     private val layoutMenuCategories = listOf("View", "Select", "Add", "Object")
 
+    /**
+     * Categorias de Modeling (Edit Mode), ya cerradas con el supervisor. View se reutiliza tal cual
+     * de Layout. Select/Add/Mesh/Vertex/Edge/Face/UV son contenido nuevo, todavia sin cargar (placeholder).
+     */
+    private val modelingMenuCategories = listOf("View", "Select", "Add", "Mesh", "Vertex", "Edge", "Face", "UV")
+
+    /** Categorias de UV Editing, ya cerradas con el supervisor. Contenido nuevo, no reutiliza nada de Layout/Modeling. */
+    private val uvEditingMenuCategories = listOf("View", "Select", "Image", "UV")
+
+
+    /**
+     * Barra de herramientas izquierda de Modeling (Edit Mode), 16 items confirmados con el supervisor.
+     * Select Box/Move/Rotate/Scale reusan los iconos que ya existen en Layout. Los otros 12 todavia no
+     * tienen icono diseñado, asi que van como fila de solo texto por ahora (buildSimpleMenuRow) - el dia
+     * que existan los iconos, cambiar esas filas por createIconButton es un cambio quirurgico, sin tocar
+     * el resto de la logica.
+     */
+    private val modelingToolEntries = listOf(
+        AddMenuEntry("Extrude Region", R.drawable.ic_modeling_extrude_region),
+        AddMenuEntry("Inset Faces", R.drawable.ic_modeling_inset_faces),
+        AddMenuEntry("Bevel", R.drawable.ic_modeling_bevel),
+        AddMenuEntry("Loop Cut", R.drawable.ic_modeling_loop_cut),
+        AddMenuEntry("Knife", R.drawable.ic_modeling_knife),
+        AddMenuEntry("Poly Build", R.drawable.ic_modeling_poly_build),
+        AddMenuEntry("Spin", R.drawable.ic_modeling_spin),
+        AddMenuEntry("Smooth", R.drawable.ic_modeling_smooth),
+        AddMenuEntry("Edge Slide", R.drawable.ic_modeling_edge_slide),
+        AddMenuEntry("Shrink/Fatten", R.drawable.ic_modeling_shrink_fatten),
+        AddMenuEntry("Shear", R.drawable.ic_modeling_shear),
+        AddMenuEntry("Rip Region", R.drawable.ic_modeling_rip_region)
+    )
+
+
     private val selectModeSubmenuItems = listOf("Set", "Extend", "Subtract", "Difference", "Intersect")
     private val selectMoreLessSubmenuItems = listOf("More", "Less", "Parent", "Child")
-    private val selectAllByTypeSubmenuItems = listOf(
-        "Mesh", "Curve", "Surface", "Metaball", "Text", "Grease Pencil", "Armature", "Lattice", "Empty"
+    /** Sin Parent/Child (jerarquia de objetos) - no aplica seleccionando geometria en Edit Mode. */
+    private val modelingMoreLessSubmenuItems = listOf("More", "Less")
+    /** Mismos iconos que las categorias de Add > Mesh/Curve/Surface/etc, ya que representan los mismos tipos de objeto. */
+    private val selectAllByTypeEntries = listOf(
+        AddMenuEntry("Mesh", R.drawable.ic_add_mesh),
+        AddMenuEntry("Curve", R.drawable.ic_add_curve),
+        AddMenuEntry("Surface", R.drawable.ic_add_surface),
+        AddMenuEntry("Metaball", R.drawable.ic_add_metaball),
+        AddMenuEntry("Text", R.drawable.ic_add_text),
+        AddMenuEntry("Grease Pencil", R.drawable.ic_add_grease_pencil),
+        AddMenuEntry("Armature", R.drawable.ic_add_armature),
+        AddMenuEntry("Lattice", R.drawable.ic_add_lattice),
+        AddMenuEntry("Empty", R.drawable.ic_add_empty)
     )
 
     // Items simples de Layout > View (placeholder por ahora, no dependen del modelo de escena).
@@ -65,9 +120,19 @@ class MainActivity : Activity() {
     )
     private val viewTrailingActionItems = listOf("Area")
 
-    private val viewNavigationSubmenuItems = listOf("Center View to Cursor", "Center View to Selected", "Zoom Region")
-    private val viewAlignViewSubmenuItems = listOf(
-        "Center Cursor and View All", "Center View to Cursor", "Align View to Active", "View Lock"
+    /**
+     * Navigation: 15 items acordados con el supervisor. Se sacaron "Center View to Cursor"
+     * (pertenece a Align View) y "Center View to Selected" (no existe en el menu real de Blender).
+     * Fly/Walk Navigation quedan afuera: no dependen de un sistema faltante sino de definir como
+     * se controlarian por touch (son modos pensados para mouse+teclado/WASD). Zoom Camera 1:1 no
+     * entra porque depende de Camera, fuera de alcance.
+     */
+    private val viewNavigationSubmenuItems = listOf(
+        "Orbit Left", "Orbit Right", "Orbit Up", "Orbit Down", "Orbit Opposite",
+        "Roll Left", "Roll Right",
+        "Pan Left", "Pan Right", "Pan Up", "Pan Down",
+        "Zoom In", "Zoom Out", "Zoom Region",
+        "Dolly View"
     )
 
     /** Viewpoint reutiliza los mismos angulos que ya usa el gizmo de ejes (ver GizmoView / animateCameraTo). */
@@ -181,6 +246,75 @@ class MainActivity : Activity() {
         "Convert", "Show/Hide", "Delete"
     )
 
+    /**
+     * Contenido de Modeling > Mesh/Vertex/Edge/Face/UV: 5 listas cerradas con el supervisor.
+     * Todo como filas planas por ahora (estructura primero); Snap y Face Data entran como categoria
+     * pero su submenu interno queda pendiente de detallar mas adelante (items dependientes del
+     * Cursor 3D en el caso de Snap). Se excluyen a proposito: Set Attribute (Mesh, deshabilitado en
+     * Blender - depende de Geometry Nodes), Extrude to Cursor or Add y Hooks (Vertex, dependen de
+     * Cursor 3D y del modificador Hook respectivamente), Mark/Clear Freestyle Edge (Edge, depende de
+     * Freestyle). Pendientes sin decidir todavia, tambien afuera: Weights (Mesh), Vertex Groups,
+     * Blend from Shape y Propagate to Shapes (Vertex) - se resuelven junto con Armature/Shape Keys.
+     */
+    private val modelingMeshMenuItems = listOf(
+        "Transform", "Mirror", "Snap", "Duplicate", "Extrude", "Merge", "Split", "Separate",
+        "Bisect", "Knife Project", "Knife Topology Tool", "Convex Hull",
+        "Symmetrize", "Snap to Symmetry", "Normals", "Shading", "Sort Elements",
+        "Show/Hide", "Clean Up", "Delete"
+    )
+    private val modelingVertexMenuItems = listOf(
+        "Extrude Vertices", "Bevel Vertices", "New Edge/Face from Vertices",
+        "Connect Vertex Path", "Connect Vertex Pairs",
+        "Rip Vertices", "Rip Vertices and Fill", "Rip Vertices and Extend",
+        "Slide Vertices", "Smooth Vertices", "Smooth Vertices (Laplacian)",
+        "Vertex Crease", "Make Vertex Parent"
+    )
+    private val modelingEdgeMenuItems = listOf(
+        "Extrude Edges", "Bevel Edges", "Bridge Edge Loops", "Screw",
+        "Subdivide", "Subdivide Edge-Ring", "Un-Subdivide",
+        "Rotate Edge CW", "Rotate Edge CCW",
+        "Edge Slide", "Loop Cut and Slide", "Offset Edge Slide",
+        "Edge Bevel Weight", "Edge Crease",
+        "Mark Seam", "Clear Seam",
+        "Mark Sharp", "Clear Sharp", "Mark Sharp from Vertices", "Clear Sharp from Vertices",
+        "Set Sharpness by Angle"
+    )
+    private val modelingFaceMenuItems = listOf(
+        "Extrude Faces", "Extrude Faces Along Normals", "Extrude Individual Faces",
+        "Inset Faces", "Poke Faces",
+        "Triangulate Faces", "Triangles to Quads", "Solidify Faces", "Wireframe",
+        "Fill", "Grid Fill", "Beautify Faces",
+        "Intersect (Knife)", "Intersect (Boolean)", "Weld Edges into Faces",
+        "Shade Smooth", "Shade Flat",
+        "Face Data"
+    )
+    /** UV Editing ya esta 100% confirmado en el alcance - los 14 entran sin excepcion. */
+    private val modelingUvMenuItems = listOf(
+        "Unwrap Angle Based", "Unwrap Conformal", "Unwrap Minimum Stretch",
+        "Smart UV Project", "Lightmap Pack", "Follow Active Quads",
+        "Cube Projection", "Cylinder Projection", "Sphere Projection",
+        "Project from View", "Project from View (Bounds)",
+        "Mark Seam", "Clear Seam", "Reset"
+    )
+
+    /**
+     * Contenido de UV Editing > View/Select/Image/UV: 4 listas cerradas con el supervisor. Se saca
+     * "Asset Shelf" (deshabilitado en Blender, depende de biblioteca de assets), "Center View to
+     * Cursor" (depende de un Cursor 2D propio del editor UV, mismo criterio que el Cursor 3D: se
+     * pospone) y "Open Cached Render" (depende de Render, fuera de alcance). Zoom, Area, Select All
+     * by Trait y Snap entran como categoria pero su contenido interno queda pendiente de detallar.
+     */
+    private val uvViewSimpleItems = listOf("Toolbar", "Sidebar", "Tool Settings", "Adjust Last Operation", "Update Automatically", "Show Metadata", "Frame Selected", "Frame All")
+    /**
+     * Ojo al implementar: a diferencia de Layout/Modeling, aca solo Lasso Select tiene submenu propio
+     * (reusa selectModeSubmenuItems) - Box Select y Circle Select son acciones directas. Box Select
+     * Pinned depende de que exista "pin" de vertices UV (ver Pin/Unpin/Invert Pins en el menu UV).
+     */
+    private val uvSelectSimpleItems = listOf("All", "None", "Invert", "Box Select", "Box Select Pinned", "Circle Select")
+    private val uvSelectTrailingItems = listOf("More", "Less", "Select Similar", "Select Linked", "Select Split")
+    private val uvImageMenuItems = listOf("New...", "Open...", "Copy", "Paste", "Save All Images")
+    private val uvUvMenuItems = listOf("Transform", "Mirror", "Snap", "Round to Pixels", "Constrain to Image Bounds", "Merge", "Split", "Rip Move UVs", "Live Unwrap", "Unwrap", "Pin", "Unpin", "Invert Pins", "Mark Seam", "Clear Seam", "Seams from Islands", "Pack Islands", "Average Islands Scale", "Arrange/Align Islands", "Set User Region", "Custom Region", "Minimize Stretch", "Stitch", "Align", "Align Rotation", "Move on Axis", "Copy UVs", "Paste UVs", "Show/Hide Faces", "Reset")
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -191,6 +325,7 @@ class MainActivity : Activity() {
         gizmoView.angleYProvider = { glView.renderer.angleY }
         glView.onRotationChanged = { gizmoView.invalidate() }
         gizmoView.onAxisSelected = { targetX, targetY, axisChar -> animateCameraTo(targetX, targetY, axisChar) }
+        glView.onTap = { x, y -> onViewportTap(x, y) }
 
         val root = FrameLayout(this)
         root.addView(
@@ -221,6 +356,22 @@ class MainActivity : Activity() {
 
         leftToolColumn = buildLeftToolColumn()
         root.addView(leftToolColumn, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            leftMargin = margin
+        })
+
+        modelingToolWrapper = maxHeightScrollView(500)
+        (modelingToolWrapper as ScrollView).isVerticalScrollBarEnabled = false
+        modelingToolColumnInner = buildModelingToolColumn()
+        (modelingToolWrapper as ScrollView).addView(modelingToolColumnInner, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        modelingToolWrapper.visibility = View.GONE
+        root.addView(modelingToolWrapper, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT
         ).apply {
@@ -333,10 +484,14 @@ class MainActivity : Activity() {
         popup.elevation = 12 * density
 
         leftToolColumn.visibility = View.GONE
+        modelingToolWrapper.visibility = View.GONE
         popup.setOnDismissListener {
             modeMenuPopup = null
             if (currentMode == AppMode.LAYOUT) {
                 leftToolColumn.visibility = View.VISIBLE
+            }
+            if (currentMode == AppMode.MODELING) {
+                modelingToolWrapper.visibility = View.VISIBLE
             }
         }
 
@@ -367,8 +522,8 @@ class MainActivity : Activity() {
         menuColumn.removeAllViews()
         val categories = when (mode) {
             AppMode.LAYOUT -> layoutMenuCategories
-            AppMode.MODELING -> emptyList() // TODO: definir categorias de Modeling.
-            AppMode.UV_EDITING -> emptyList() // TODO: definir categorias de UV Editing.
+            AppMode.MODELING -> modelingMenuCategories
+            AppMode.UV_EDITING -> uvEditingMenuCategories
         }
         if (categories.isEmpty()) {
             menuColumn.addView(buildSimpleMenuRow("Próximamente") { })
@@ -384,17 +539,67 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Dispatcher central: decide que render function usar segun modo+categoria. El chequeo de
+     * "View" para UV_EDITING va ANTES del generico "category == View" (que sirve a Layout/Modeling),
+     * porque si no, el generico lo intercepta primero y el contenido especifico de UV_EDITING > View
+     * (renderUvEditingViewMenu) nunca se alcanza.
+     */
     private fun fillModeMenuWithCategoryContent(menuColumn: LinearLayout, mode: AppMode, category: String, popup: PopupWindow) {
+        if (mode == AppMode.MODELING && category == "Select") {
+            renderModelingSelectMenu(menuColumn, popup)
+            return
+        }
         if (mode == AppMode.LAYOUT && category == "Select") {
             renderLayoutSelectMenu(menuColumn, popup)
             return
         }
-        if (mode == AppMode.LAYOUT && category == "View") {
-            renderLayoutViewMenu(menuColumn, popup)
+        if (mode == AppMode.UV_EDITING && category == "View") {
+            renderUvEditingViewMenu(menuColumn, popup)
+            return
+        }
+        if (category == "View") {
+            renderViewMenu(menuColumn, mode, popup)
+            return
+        }
+        if (mode == AppMode.MODELING && category == "Add") {
+            renderModelingAddMenu(menuColumn, popup)
             return
         }
         if (mode == AppMode.LAYOUT && category == "Add") {
             renderLayoutAddMenu(menuColumn, popup)
+            return
+        }
+        if (mode == AppMode.MODELING && category == "Mesh") {
+            renderModelingFlatMenu(menuColumn, popup, modelingMeshMenuItems)
+            return
+        }
+        if (mode == AppMode.MODELING && category == "Vertex") {
+            renderModelingFlatMenu(menuColumn, popup, modelingVertexMenuItems)
+            return
+        }
+        if (mode == AppMode.MODELING && category == "Edge") {
+            renderModelingFlatMenu(menuColumn, popup, modelingEdgeMenuItems)
+            return
+        }
+        if (mode == AppMode.MODELING && category == "Face") {
+            renderModelingFlatMenu(menuColumn, popup, modelingFaceMenuItems)
+            return
+        }
+        if (mode == AppMode.MODELING && category == "UV") {
+            renderModelingFlatMenu(menuColumn, popup, modelingUvMenuItems)
+            return
+        }
+        if (mode == AppMode.UV_EDITING && category == "Select") {
+            renderUvEditingSelectMenu(menuColumn, popup)
+            return
+        }
+        if (mode == AppMode.UV_EDITING && category == "Image") {
+            renderUvEditingFlatMenu(menuColumn, popup, uvImageMenuItems)
+            return
+        }
+        if (mode == AppMode.UV_EDITING && category == "UV") {
+            renderUvEditingUvMenu(menuColumn, popup)
             return
         }
         if (mode == AppMode.LAYOUT && category == "Object") {
@@ -437,7 +642,7 @@ class MainActivity : Activity() {
             renderSelectSubmenu(menuColumn, popup, selectMoreLessSubmenuItems)
         })
         menuColumn.addView(buildSimpleMenuRow("Select All by Type") {
-            renderSelectSubmenu(menuColumn, popup, selectAllByTypeSubmenuItems)
+            renderSelectAllByTypeSubmenu(menuColumn, popup)
         })
         addSelectActionRow(menuColumn, popup, "Select Grouped")
         addSelectActionRow(menuColumn, popup, "Select Linked")
@@ -448,7 +653,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Submenu generico dentro de Select (Box/Circle/Lasso, More/Less, Select All by Type). */
+    /** Submenu generico dentro de Select (Box/Circle/Lasso, More/Less), solo texto. */
     private fun renderSelectSubmenu(menuColumn: LinearLayout, popup: PopupWindow, items: List<String>) {
         menuColumn.removeAllViews()
         menuColumn.addView(buildSimpleMenuRow("← Volver") {
@@ -462,7 +667,87 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Submenu de Select All by Type, con icono por tipo (mismos recursos que Add > Mesh/Curve/etc). */
+    private fun renderSelectAllByTypeSubmenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderLayoutSelectMenu(menuColumn, popup)
+        })
+        for (entry in selectAllByTypeEntries) {
+            menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                popup.dismiss()
+                onSelectMenuAction(entry.label)
+            })
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
     private fun addSelectActionRow(menuColumn: LinearLayout, popup: PopupWindow, label: String) {
+        menuColumn.addView(buildSimpleMenuRow(label) {
+            popup.dismiss()
+            onSelectMenuAction(label)
+        })
+    }
+
+    /**
+     * Contenido de Modeling > Select: lista nueva confirmada por el supervisor (no reutiliza Layout,
+     * en Edit Mode se selecciona geometria, no objetos). Se saca "By Attribute" (aparece deshabilitado
+     * en Blender mismo, depende de Geometry Nodes). Box/Circle/Lasso Select reusan el mismo submenu
+     * de modo de seleccion (Set/Extend/Subtract/Difference/Intersect) que ya usa Layout > Select.
+     */
+    private fun renderModelingSelectMenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, AppMode.MODELING, popup)
+        })
+
+        addModelingSelectActionRow(menuColumn, popup, "All")
+        addModelingSelectActionRow(menuColumn, popup, "None")
+        addModelingSelectActionRow(menuColumn, popup, "Invert")
+        menuColumn.addView(buildSimpleMenuRow("Box Select") {
+            renderModelingSelectSubmenu(menuColumn, popup, selectModeSubmenuItems)
+        })
+        menuColumn.addView(buildSimpleMenuRow("Circle Select") {
+            renderModelingSelectSubmenu(menuColumn, popup, selectModeSubmenuItems)
+        })
+        menuColumn.addView(buildSimpleMenuRow("Lasso Select") {
+            renderModelingSelectSubmenu(menuColumn, popup, selectModeSubmenuItems)
+        })
+        addModelingSelectActionRow(menuColumn, popup, "Select Mirror")
+        addModelingSelectActionRow(menuColumn, popup, "Select Random")
+        addModelingSelectActionRow(menuColumn, popup, "Checker Deselect")
+        menuColumn.addView(buildSimpleMenuRow("More/Less") {
+            renderModelingSelectSubmenu(menuColumn, popup, modelingMoreLessSubmenuItems)
+        })
+        addModelingSelectActionRow(menuColumn, popup, "Select Similar")
+        addModelingSelectActionRow(menuColumn, popup, "Select All by Trait")
+        addModelingSelectActionRow(menuColumn, popup, "Select Linked")
+        addModelingSelectActionRow(menuColumn, popup, "Select Loops")
+        addModelingSelectActionRow(menuColumn, popup, "Sharp Edges")
+        addModelingSelectActionRow(menuColumn, popup, "Side of Active")
+
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Submenu generico dentro de Modeling > Select (Box/Circle/Lasso, More/Less), solo texto. */
+    private fun renderModelingSelectSubmenu(menuColumn: LinearLayout, popup: PopupWindow, items: List<String>) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderModelingSelectMenu(menuColumn, popup)
+        })
+        for (item in items) {
+            addModelingSelectActionRow(menuColumn, popup, item)
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    private fun addModelingSelectActionRow(menuColumn: LinearLayout, popup: PopupWindow, label: String) {
         menuColumn.addView(buildSimpleMenuRow(label) {
             popup.dismiss()
             onSelectMenuAction(label)
@@ -478,10 +763,10 @@ class MainActivity : Activity() {
      * Contenido de Layout > View, en el orden acordado con el usuario:
      * items simples -> Viewpoint (funcional, reusa el gizmo) -> Navigation -> Align View -> items simples finales.
      */
-    private fun renderLayoutViewMenu(menuColumn: LinearLayout, popup: PopupWindow) {
+    private fun renderViewMenu(menuColumn: LinearLayout, mode: AppMode, popup: PopupWindow) {
         menuColumn.removeAllViews()
         menuColumn.addView(buildSimpleMenuRow("← Volver") {
-            fillModeMenuWithCategories(menuColumn, AppMode.LAYOUT, popup)
+            fillModeMenuWithCategories(menuColumn, mode, popup)
         })
 
         for (item in viewSimpleActionItems) {
@@ -489,14 +774,12 @@ class MainActivity : Activity() {
         }
 
         menuColumn.addView(buildSimpleMenuRow("Viewpoint") {
-            renderViewpointSubmenu(menuColumn, popup)
+            renderViewpointSubmenu(menuColumn, mode, popup)
         })
         menuColumn.addView(buildSimpleMenuRow("Navigation") {
-            renderViewSubmenu(menuColumn, popup, viewNavigationSubmenuItems)
+            renderViewSubmenu(menuColumn, mode, popup, viewNavigationSubmenuItems)
         })
-        menuColumn.addView(buildSimpleMenuRow("Align View") {
-            renderViewSubmenu(menuColumn, popup, viewAlignViewSubmenuItems)
-        })
+        addViewActionRow(menuColumn, popup, "Align View to Active")
 
         for (item in viewTrailingActionItems) {
             addViewActionRow(menuColumn, popup, item)
@@ -511,10 +794,10 @@ class MainActivity : Activity() {
      * Submenu de Viewpoint: unico contenido de View con logica real, ya que reusa
      * animateCameraTo con los mismos angulos que el gizmo de ejes (ver viewpointOptions).
      */
-    private fun renderViewpointSubmenu(menuColumn: LinearLayout, popup: PopupWindow) {
+    private fun renderViewpointSubmenu(menuColumn: LinearLayout, mode: AppMode, popup: PopupWindow) {
         menuColumn.removeAllViews()
         menuColumn.addView(buildSimpleMenuRow("← Volver") {
-            renderLayoutViewMenu(menuColumn, popup)
+            renderViewMenu(menuColumn, mode, popup)
         })
         for (option in viewpointOptions) {
             menuColumn.addView(buildSimpleMenuRow(option.label) {
@@ -528,10 +811,10 @@ class MainActivity : Activity() {
     }
 
     /** Submenu generico dentro de View (Navigation, Align View), todos placeholder por ahora. */
-    private fun renderViewSubmenu(menuColumn: LinearLayout, popup: PopupWindow, items: List<String>) {
+    private fun renderViewSubmenu(menuColumn: LinearLayout, mode: AppMode, popup: PopupWindow, items: List<String>) {
         menuColumn.removeAllViews()
         menuColumn.addView(buildSimpleMenuRow("← Volver") {
-            renderLayoutViewMenu(menuColumn, popup)
+            renderViewMenu(menuColumn, mode, popup)
         })
         for (item in items) {
             addViewActionRow(menuColumn, popup, item)
@@ -657,7 +940,11 @@ class MainActivity : Activity() {
         return row
     }
 
-    /** Submenu de primitivas dentro de Add > Mesh, mismo patron que el resto de Add (placeholder). */
+    /**
+     * Submenu de primitivas dentro de Add > Mesh. "Cube" ya crea geometria real (unica primitiva
+     * que existe hoy, ver Cube.kt) - el resto sigue como placeholder (onAddMenuAction) hasta que
+     * tengan su propia geometria.
+     */
     private fun renderMeshPrimitivesSubmenu(menuColumn: LinearLayout, popup: PopupWindow) {
         menuColumn.removeAllViews()
         menuColumn.addView(buildSimpleMenuRow("← Volver") {
@@ -666,12 +953,26 @@ class MainActivity : Activity() {
         for (entry in meshPrimitiveEntries) {
             menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
                 popup.dismiss()
-                onAddMenuAction(entry.label)
+                if (entry.label == "Cube") {
+                    addCubeObject()
+                } else {
+                    onAddMenuAction(entry.label)
+                }
             })
         }
         if (popup.isShowing) {
             popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
+    }
+
+    /**
+     * Add > Mesh > Cube real: agrega un SceneObject nuevo via MyGLRenderer.addCube() (que ya
+     * deja todo lo demas deseleccionado) y pide un redraw. La seleccion visual (contorno naranja)
+     * ya reacciona sola porque Cube.kt lee SceneObject.selected en cada draw().
+     */
+    private fun addCubeObject() {
+        glView.renderer.addCube()
+        glView.requestRender()
     }
 
     /** Submenu de primitivas dentro de Add > Curve, mismo patron que renderMeshPrimitivesSubmenu. */
@@ -776,14 +1077,167 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Contenido de Modeling > Add: va directo a las primitivas de malla (mismas 10 que Layout > Add >
+     * Mesh, mismos iconos), sin categoria intermedia - en Edit Mode "Add" siempre crea geometria.
+     */
+    private fun renderModelingAddMenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, AppMode.MODELING, popup)
+        })
+        for (entry in meshPrimitiveEntries) {
+            menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
+                popup.dismiss()
+                onAddMenuAction(entry.label)
+            })
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
     private fun onAddMenuAction(action: String) {
         // TODO: conectar a la logica real de creacion de objetos una vez que exista el modelo de escena editable.
         Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
     }
 
     /**
-     * Contenido de Layout > Object: lista plana confirmada por el usuario, todo placeholder.
+     * Render generico y compartido para Modeling > Mesh/Vertex/Edge/Face/UV: todos son listas planas
+     * sin submenu por ahora, mismo patron que renderLayoutObjectMenu pero apuntando a Modeling.
      */
+    private fun renderModelingFlatMenu(menuColumn: LinearLayout, popup: PopupWindow, items: List<String>) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, AppMode.MODELING, popup)
+        })
+        for (item in items) {
+            menuColumn.addView(buildSimpleMenuRow(item) {
+                popup.dismiss()
+                onModelingMenuAction(item)
+            })
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Placeholder generico para categorias marcadas "pendiente de detallar" (Zoom, Area, Select All by Trait, Snap). */
+    private fun renderPendingSubmenu(menuColumn: LinearLayout, popup: PopupWindow, onBack: () -> Unit) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") { onBack() })
+        menuColumn.addView(buildSimpleMenuRow("Próximamente") { })
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    private fun renderUvEditingViewMenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, AppMode.UV_EDITING, popup)
+        })
+        for (item in uvViewSimpleItems) {
+            addUvEditingActionRow(menuColumn, popup, item)
+        }
+        menuColumn.addView(buildSimpleMenuRow("Zoom") {
+            renderPendingSubmenu(menuColumn, popup) { renderUvEditingViewMenu(menuColumn, popup) }
+        })
+        menuColumn.addView(buildSimpleMenuRow("Area") {
+            renderPendingSubmenu(menuColumn, popup) { renderUvEditingViewMenu(menuColumn, popup) }
+        })
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Ojo: aca solo Lasso Select abre submenu (reusa selectModeSubmenuItems) - Box/Circle Select son directas. */
+    private fun renderUvEditingSelectMenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, AppMode.UV_EDITING, popup)
+        })
+        for (item in uvSelectSimpleItems) {
+            addUvEditingActionRow(menuColumn, popup, item)
+        }
+        menuColumn.addView(buildSimpleMenuRow("Lasso Select") {
+            renderUvEditingSelectSubmenu(menuColumn, popup, selectModeSubmenuItems)
+        })
+        for (item in uvSelectTrailingItems) {
+            addUvEditingActionRow(menuColumn, popup, item)
+        }
+        menuColumn.addView(buildSimpleMenuRow("Select All by Trait") {
+            renderPendingSubmenu(menuColumn, popup) { renderUvEditingSelectMenu(menuColumn, popup) }
+        })
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    private fun renderUvEditingSelectSubmenu(menuColumn: LinearLayout, popup: PopupWindow, items: List<String>) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            renderUvEditingSelectMenu(menuColumn, popup)
+        })
+        for (item in items) {
+            addUvEditingActionRow(menuColumn, popup, item)
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Contenido de UV Editing > UV: lista plana, salvo "Snap" que abre submenu pendiente de detallar. */
+    private fun renderUvEditingUvMenu(menuColumn: LinearLayout, popup: PopupWindow) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, AppMode.UV_EDITING, popup)
+        })
+        for (item in uvUvMenuItems) {
+            if (item == "Snap") {
+                menuColumn.addView(buildSimpleMenuRow(item) {
+                    renderPendingSubmenu(menuColumn, popup) { renderUvEditingUvMenu(menuColumn, popup) }
+                })
+            } else {
+                addUvEditingActionRow(menuColumn, popup, item)
+            }
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    /** Render generico para categorias de UV Editing sin excepciones (por ahora, Image). */
+    private fun renderUvEditingFlatMenu(menuColumn: LinearLayout, popup: PopupWindow, items: List<String>) {
+        menuColumn.removeAllViews()
+        menuColumn.addView(buildSimpleMenuRow("← Volver") {
+            fillModeMenuWithCategories(menuColumn, AppMode.UV_EDITING, popup)
+        })
+        for (item in items) {
+            addUvEditingActionRow(menuColumn, popup, item)
+        }
+        if (popup.isShowing) {
+            popup.update(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    private fun addUvEditingActionRow(menuColumn: LinearLayout, popup: PopupWindow, label: String) {
+        menuColumn.addView(buildSimpleMenuRow(label) {
+            popup.dismiss()
+            onUvEditingMenuAction(label)
+        })
+    }
+
+    private fun onUvEditingMenuAction(action: String) {
+        // TODO: conectar a la logica real de UV Editing una vez que exista el modelo editable.
+        Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun onModelingMenuAction(action: String) {
+        // TODO: conectar a la logica real de edicion de malla una vez que exista el modelo editable (Edit Mode).
+        Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
+    }
+
     private fun renderLayoutObjectMenu(menuColumn: LinearLayout, popup: PopupWindow) {
         menuColumn.removeAllViews()
         menuColumn.addView(buildSimpleMenuRow("← Volver") {
@@ -859,11 +1313,80 @@ class MainActivity : Activity() {
         return column
     }
 
+    /**
+     * Columna izquierda de Modeling (Edit Mode): 4 botones con icono (reusa los de Layout) + 12 filas
+     * de solo texto (todavia sin icono diseñado). Se envuelve en un ScrollView con altura maxima
+     * (ver modelingToolWrapper en onCreate) porque 16 items no entran completos en pantallas chicas.
+     */
+    private fun buildModelingToolColumn(): LinearLayout {
+        val density = resources.displayMetrics.density
+        val column = LinearLayout(this)
+        column.orientation = LinearLayout.VERTICAL
+
+        modelingSelectBtn = createIconButton(R.drawable.ic_select_box)
+        modelingMoveBtn = createIconButton(R.drawable.ic_move)
+        modelingRotateBtn = createIconButton(R.drawable.ic_rotate)
+        modelingScaleBtn = createIconButton(R.drawable.ic_scale)
+
+        modelingSelectBtn.setOnClickListener { setModelingTool(LayoutTool.SELECT) }
+        modelingMoveBtn.setOnClickListener { setModelingTool(LayoutTool.MOVE) }
+        modelingRotateBtn.setOnClickListener { setModelingTool(LayoutTool.ROTATE) }
+        modelingScaleBtn.setOnClickListener { setModelingTool(LayoutTool.SCALE) }
+
+        val spacing = (8 * density).toInt()
+        for (btn in listOf(modelingSelectBtn, modelingMoveBtn, modelingRotateBtn, modelingScaleBtn)) {
+            (btn.layoutParams as LinearLayout.LayoutParams).topMargin = spacing
+            column.addView(btn)
+        }
+        (modelingSelectBtn.layoutParams as LinearLayout.LayoutParams).topMargin = 0
+
+        for (entry in modelingToolEntries) {
+            val btn = createIconButton(entry.iconRes)
+            btn.setOnClickListener { setModelingExtraTool(entry.label) }
+            (btn.layoutParams as LinearLayout.LayoutParams).topMargin = spacing
+            modelingExtraToolButtons[entry.label] = btn
+            column.addView(btn)
+        }
+
+
+        updateModelingToolHighlight()
+        return column
+    }
+
+    private fun setModelingTool(tool: LayoutTool) {
+        currentModelingTool = tool
+        currentModelingExtraTool = null
+        updateModelingToolHighlight()
+        // TODO: conectar cada herramienta a su logica real (seleccionar/mover/rotar/escalar geometria)
+        // una vez que exista el modelo de escena editable (Edit Mode).
+    }
+
+    /** Herramienta "de un solo toque" (Extrude Region, Bevel, etc.) - queda resaltada hasta elegir otra. */
+    private fun setModelingExtraTool(label: String) {
+        currentModelingExtraTool = label
+        updateModelingToolHighlight()
+        onModelingMenuAction(label)
+    }
+
+    /**
+     * Unifica el resaltado de los 16 botones de la barra de Modeling: solo uno activo a la vez
+     * (basico o "extra"), igual que en Blender real - no son dos grupos independientes.
+     */
+    private fun updateModelingToolHighlight() {
+        modelingSelectBtn.background = circleBackground(currentModelingExtraTool == null && currentModelingTool == LayoutTool.SELECT)
+        modelingMoveBtn.background = circleBackground(currentModelingExtraTool == null && currentModelingTool == LayoutTool.MOVE)
+        modelingRotateBtn.background = circleBackground(currentModelingExtraTool == null && currentModelingTool == LayoutTool.ROTATE)
+        modelingScaleBtn.background = circleBackground(currentModelingExtraTool == null && currentModelingTool == LayoutTool.SCALE)
+        for ((label, btn) in modelingExtraToolButtons) {
+            btn.background = circleBackground(currentModelingExtraTool == label)
+        }
+    }
+
     private fun setLayoutTool(tool: LayoutTool) {
         currentLayoutTool = tool
         updateLayoutToolHighlight()
-        // TODO: conectar cada herramienta a su logica real (seleccionar/mover/rotar/escalar objeto)
-        // una vez que exista el modelo de escena.
+        // TODO: conectar Move/Rotate/Scale a su logica real de gestos una vez que exista soporte
+        // de arrastre sobre el objeto seleccionado (Select ya funciona via onViewportTap).
     }
 
     private fun updateLayoutToolHighlight() {
@@ -873,11 +1396,24 @@ class MainActivity : Activity() {
         scaleToolBtn.background = circleBackground(currentLayoutTool == LayoutTool.SCALE)
     }
 
+    /**
+     * Tap en el viewport 3D: si estamos en Layout con la herramienta Select activa, intenta
+     * seleccionar el objeto tocado (o deselecciona todo si el tap cae en espacio vacio, igual
+     * que en Blender). Move/Rotate/Scale con gestos reales sobre el objeto queda para mas adelante.
+     */
+    private fun onViewportTap(x: Float, y: Float) {
+        if (currentMode != AppMode.LAYOUT) return
+        if (currentLayoutTool != LayoutTool.SELECT) return
+        glView.renderer.selectObjectAt(x, y)
+        glView.requestRender()
+    }
+
     private fun setMode(mode: AppMode) {
         currentMode = mode
         updateModeHighlight()
         leftToolColumn.visibility = if (mode == AppMode.LAYOUT) View.VISIBLE else View.GONE
-        // TODO: cambiar el resto de la interfaz/herramientas segun el modo (Modeling / UV Editing).
+        modelingToolWrapper.visibility = if (mode == AppMode.MODELING) View.VISIBLE else View.GONE
+        // TODO: cambiar el resto de la interfaz/herramientas segun el modo (UV Editing).
     }
 
     private fun updateModeHighlight() {

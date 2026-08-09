@@ -3,41 +3,32 @@
     android:height="28dp"
     android:viewportWidth="640"
     android:viewportHeight="640">
-    <!-- Nota: los marcadores de flecha del SVG original no son soportados por vector drawables; se reconstruyeron como triangulos, agrandados para que se vean al tamano real del boton. -->
     <path
-        android:pathData="M 254.49,317.998 L 147.34,317.998"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="30"
-        android:strokeLineCap="round"
-        android:fillColor="#00000000" />
-    <path
-        android:pathData="M 57.34,317.998 L 147.34,272.998 L 147.34,362.998 Z"
+        android:pathData="m 57.339844,303.49805 a 14.5002,14.5002 0 0 0 -14.5,14.5 14.5002,14.5002 0 0 0 14.5,14.5 H 254.48828 a 14.5002,14.5002 0 0 0 14.5,-14.5 14.5002,14.5002 0 0 0 -14.5,-14.5 z"
         android:fillColor="#FFFFFF" />
     <path
-        android:pathData="M 377.50,318.00 L 484.65,318.00"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="30"
-        android:strokeLineCap="round"
-        android:fillColor="#00000000" />
+        android:pathData="m 28.339839,317.99801 87.001201,-87.0012 h 58.0008 l -87.001199,87.0012 87.001199,87.0012 h -58.0008 z"
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd" />
     <path
-        android:pathData="M 574.65,318.00 L 484.65,273.00 L 484.65,363.00 Z"
+        android:pathData="m 377.5,303.50195 a 14.5002,14.5002 0 0 0 -14.5,14.5 14.5002,14.5002 0 0 0 14.5,14.5 h 197.14844 a 14.5002,14.5002 0 0 0 14.5,-14.5 14.5002,14.5002 0 0 0 -14.5,-14.5 z"
         android:fillColor="#FFFFFF" />
     <path
-        android:pathData="M 319.40,253.71 L 319.40,146.56"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="30"
-        android:strokeLineCap="round"
-        android:fillColor="#00000000" />
+        android:pathData="m 603.6484,318.0012 -87.0012,87.0012 H 458.6464 L 545.6476,318.0012 458.6464,231 h 58.0008 z"
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd" />
     <path
-        android:pathData="M 319.40,56.56 L 274.40,146.56 L 364.40,146.56 Z"
+        android:pathData="m 319.40234,362.2207 a 14.5002,14.5002 0 0 0 -14.5,14.5 v 197.14649 a 14.5002,14.5002 0 0 0 14.5,14.5 14.5002,14.5002 0 0 0 14.5,-14.5 V 376.7207 a 14.5002,14.5002 0 0 0 -14.5,-14.5 z"
         android:fillColor="#FFFFFF" />
     <path
-        android:pathData="M 319.40,376.72 L 319.40,483.87"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="30"
-        android:strokeLineCap="round"
-        android:fillColor="#00000000" />
+        android:pathData="m 319.40171,602.86835 -87.0012,-87.0012 v -58.0008 l 87.0012,87.0012 87.0012,-87.0012 v 58.0008 z"
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd" />
     <path
-        android:pathData="M 319.40,573.87 L 274.40,483.87 L 364.40,483.87 Z"
+        android:pathData="m 319.4043,42.060547 a 14.5002,14.5002 0 0 0 -14.5,14.5 V 253.70703 a 14.5002,14.5002 0 0 0 14.5,14.50195 14.5002,14.5002 0 0 0 14.5,-14.50195 V 56.560547 a 14.5002,14.5002 0 0 0 -14.5,-14.5 z"
         android:fillColor="#FFFFFF" />
+    <path
+        android:pathData="m 319.4049,27.559791 87.0012,87.001199 v 58.0008 L 319.4049,85.560593 232.4037,172.56179 v -58.0008 z"
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd" />
 </vector>
