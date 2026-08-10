@@ -19,7 +19,14 @@ enum class GizmoMode { MOVE, ROTATE }
  * Geometria por eje, en unidades locales (se escala y traslada en MyGLRenderer.onDrawFrame):
  * - Move: shaft (linea) + tip (piramide de base cuadrada) a lo largo de +X para el eje X; los
  *   ejes Y/Z se generan permutando que componente es "along" en pointOnAxis, en vez de repetir la
- *   definicion 3 veces.
+ *   definicion 3 veces. Con un eje agarrado (activeAxis != null en draw, ver
+ *   MyGLRenderer.activeMoveAxis), se dibuja SOLO esa flecha (mas gruesa) y las otras 2
+ *   desaparecen - mismo criterio visual que Rotate con un anillo agarrado (ver mas abajo), y
+ *   MyGLRenderer de paso agrega la linea infinita + crucecita del pivote (drawInfiniteAxisLine /
+ *   drawCenterCrosshair, mismas piezas que usa Rotate). Se logra sin geometria dinamica: como
+ *   moveLineVertices/moveTriVertices ya se arman por eje en orden fijo (X, Y, Z - ver init),
+ *   alcanza con dibujar la sub-region del buffer que le corresponde a ese eje via el offset
+ *   "first" de glDrawArrays (MOVE_LINE_VERTS_PER_AXIS / MOVE_TRI_VERTS_PER_AXIS, companion object).
  * - Rotate: 3 anillos de color (uno por eje) + un 4to anillo blanco "trackball" mas grande,
  *   siempre de cara a la camara (billboard, armado en MyGLRenderer.onDrawFrame). De cada anillo
  *   de color solo se dibuja la mitad que queda de frente a la camara (ver
@@ -54,6 +61,10 @@ class Gizmo3D {
         const val TRACKBALL_RADIUS_SCALE = 1.15f
         /** Media longitud (unidades de mundo reales, NO escaladas por gizmoScreenScale) de la linea infinita del eje activo - ver drawInfiniteAxisLine. Elegido para cruzar la pantalla en cualquier zoom razonable sin salirse del far plane de la camara (30, ver MyGLRenderer.onDrawFrame). */
         const val AXIS_LINE_HALF_LENGTH = 15f
+        /** Vertices (GL_LINES) que aporta cada eje al shaft de Move en moveLineVertices - ver addMoveAxisGeometry (1 segmento = 2 vertices). Junto con MOVE_TRI_VERTS_PER_AXIS, permite dibujar solo la flecha de un eje via el offset "first" de glDrawArrays, sin geometria dinamica. */
+        const val MOVE_LINE_VERTS_PER_AXIS = 2
+        /** Vertices (GL_TRIANGLES) que aporta cada eje al tip de Move en moveTriVertices - ver addMoveAxisGeometry (piramide de base cuadrada = 4 triangulos * 3 vertices). */
+        const val MOVE_TRI_VERTS_PER_AXIS = 12
     }
 
     private val vertexShaderCode = """
@@ -91,7 +102,9 @@ class Gizmo3D {
     // contra cualquier color de eje de fondo.
     private val crosshairColor = floatArrayOf(1f, 1f, 1f, 1f)
 
-    // Geometria de Move: lineas (shaft) + triangulos (tip de la flecha).
+    // Geometria de Move: lineas (shaft) + triangulos (tip de la flecha). Se arman por eje en orden
+    // fijo X, Y, Z (ver init, mismo orden que axisDefs) - eso es lo que permite despues dibujar
+    // solo un eje via offset (ver MOVE_LINE_VERTS_PER_AXIS / MOVE_TRI_VERTS_PER_AXIS).
     private val moveLineVertices = mutableListOf<Float>()
     private val moveLineColors = mutableListOf<Float>()
     private val moveTriVertices = mutableListOf<Float>()
@@ -358,10 +371,12 @@ class Gizmo3D {
      * localViewDir es necesario para GizmoMode.ROTATE sin eje activo (ver
      * updateRotateVisibleSegments) - viene de MyGLRenderer.computeWorldViewDirection(). Para MOVE
      * no se usa, se puede pasar null. activeAxis (X/Y/Z) es el eje que se esta arrastrando ahora
-     * mismo (ver MainActivity.axisLocked, sincronizado a MyGLRenderer.activeRotateAxis) - si no es
-     * null, se ignora localViewDir y se dibuja solo ese anillo, completo, en su color de eje
-     * (ver updateRotateActiveAxisOnly). Si activeAxis es null y localViewDir tambien, no se dibuja
-     * nada ese frame en vez de mostrar los 3 anillos sin filtrar.
+     * mismo (ver MainActivity.axisLocked, sincronizado a MyGLRenderer.activeRotateAxis /
+     * activeMoveAxis segun el modo) - si no es null, en ROTATE se ignora localViewDir y se dibuja
+     * solo ese anillo, completo, en su color de eje (ver updateRotateActiveAxisOnly); en MOVE se
+     * dibuja solo esa flecha, mas gruesa (ver MOVE_LINE_VERTS_PER_AXIS/MOVE_TRI_VERTS_PER_AXIS).
+     * Si activeAxis es null y (en ROTATE) localViewDir tambien, no se dibuja nada ese frame en vez
+     * de mostrar los 3 anillos sin filtrar.
      */
     fun draw(mvpMatrix: FloatArray, mode: GizmoMode, localViewDir: FloatArray? = null, activeAxis: Char? = null) {
         GLES20.glUseProgram(program)
@@ -378,14 +393,37 @@ class Gizmo3D {
 
         when (mode) {
             GizmoMode.MOVE -> {
-                GLES20.glLineWidth(4f)
+                // Con eje activo (arrastre en curso): solo esa flecha, mas gruesa para que
+                // resalte - mismo criterio que Rotate con un anillo agarrado. Sin eje activo:
+                // las 3 flechas completas, como siempre. No hace falta geometria dinamica: los 2
+                // buffers ya estan armados por eje en orden fijo X/Y/Z (ver init), asi que alcanza
+                // con dibujar la sub-region de cada uno via el offset "first" de glDrawArrays.
+                val lineFirst: Int
+                val lineCount: Int
+                val triFirst: Int
+                val triCount: Int
+                if (activeAxis != null) {
+                    val axisIndex = charToAlongComponent(activeAxis)
+                    lineFirst = axisIndex * MOVE_LINE_VERTS_PER_AXIS
+                    lineCount = MOVE_LINE_VERTS_PER_AXIS
+                    triFirst = axisIndex * MOVE_TRI_VERTS_PER_AXIS
+                    triCount = MOVE_TRI_VERTS_PER_AXIS
+                    GLES20.glLineWidth(6f)
+                } else {
+                    lineFirst = 0
+                    lineCount = moveLineVertexCount
+                    triFirst = 0
+                    triCount = moveTriVertexCount
+                    GLES20.glLineWidth(4f)
+                }
+
                 GLES20.glVertexAttribPointer(posHandle, 3, GLES20.GL_FLOAT, false, 0, moveLineVertexBuffer)
                 GLES20.glVertexAttribPointer(colorHandle, 4, GLES20.GL_FLOAT, false, 0, moveLineColorBuffer)
-                GLES20.glDrawArrays(GLES20.GL_LINES, 0, moveLineVertexCount)
+                GLES20.glDrawArrays(GLES20.GL_LINES, lineFirst, lineCount)
 
                 GLES20.glVertexAttribPointer(posHandle, 3, GLES20.GL_FLOAT, false, 0, moveTriVertexBuffer)
                 GLES20.glVertexAttribPointer(colorHandle, 4, GLES20.GL_FLOAT, false, 0, moveTriColorBuffer)
-                GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, moveTriVertexCount)
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLES, triFirst, triCount)
             }
             GizmoMode.ROTATE -> {
                 // Con eje activo (arrastre en curso): solo ese anillo, completo y en su color de
@@ -427,11 +465,11 @@ class Gizmo3D {
 
     /**
      * Linea que cruza toda la pantalla a lo largo del eje activo, centrada en el objeto -
-     * referencia visual de Blender al rotar con un eje restringido, para ver la orientacion del
-     * eje mas alla del tamano chico del anillo. mvpMatrix debe traer ya la traslacion al objeto
-     * aplicada pero SIN el escalado de gizmoScreenScale (ver MyGLRenderer.onDrawFrame) - la
-     * longitud se maneja aca en unidades de mundo reales (AXIS_LINE_HALF_LENGTH), no en las
-     * unidades locales chicas del resto del gizmo.
+     * referencia visual de Blender al mover o rotar con un eje restringido, para ver la
+     * orientacion del eje mas alla del tamano chico del gizmo. mvpMatrix debe traer ya la
+     * traslacion al objeto aplicada pero SIN el escalado de gizmoScreenScale (ver
+     * MyGLRenderer.onDrawFrame) - la longitud se maneja aca en unidades de mundo reales
+     * (AXIS_LINE_HALF_LENGTH), no en las unidades locales chicas del resto del gizmo.
      */
     fun drawInfiniteAxisLine(mvpMatrix: FloatArray, axisDir: FloatArray, color: FloatArray) {
         val half = AXIS_LINE_HALF_LENGTH
@@ -447,15 +485,20 @@ class Gizmo3D {
     }
 
     /**
-     * Linea punteada desde el centro del objeto hasta el borde del anillo, en la direccion donde
-     * empezo el arrastre (ver MyGLRenderer.activeRotateStartDir) - marca de referencia del angulo
-     * de arranque; se queda fija durante todo el gesto (no sigue el dedo mientras se arrastra, a
-     * diferencia del gizmo real de Blender que sí la actualiza en vivo - simplificacion acordada).
+     * Linea punteada desde el centro del objeto hasta donde esta el dedo AHORA - sigue al dedo en
+     * vivo mientras se arrastra, igual que el gizmo real de Blender (ver video de referencia del
+     * usuario; localDir es MyGLRenderer.activeRotateCurrentDir, recalculada en cada ACTION_MOVE
+     * via updateActiveRotateCurrentDir). Antes usaba una direccion fija congelada al empezar el
+     * gesto (activeRotateStartDir) - simplificacion respecto de Blender real, ya corregida.
+
+
+
+
      * localDir ya viene en el mismo espacio local que la geometria del anillo (ver
      * MyGLRenderer.hitTestGizmoRotateAxis - es una direccion mundo directa, sin transformar, ya
      * que el gizmo no lleva rotacion propia, ver comentario de clase).
      */
-    fun drawStartAngleMarker(mvpMatrix: FloatArray, localDir: FloatArray, color: FloatArray) {
+    fun drawLiveAngleMarker(mvpMatrix: FloatArray, localDir: FloatArray, color: FloatArray) {
         val dashCount = 10
         val vertices = mutableListOf<Float>()
         val colors = mutableListOf<Float>()
@@ -475,11 +518,11 @@ class Gizmo3D {
     }
 
     /**
-     * Crucecita chica de 3 ejes en el centro del objeto (pivote de rotacion) - se dibuja con el
-     * mismo mvpMatrix ya escalado del gizmo (gizmoScreenScale), asi que su tamano queda
-     * proporcional al resto del gizmo. Se usan los 3 ejes (no solo 2, billboard) para evitar el
-     * caso degenerado de verse como una linea chata si la camara queda alineada con uno de ellos -
-     * mas simple que armar una matriz billboard aparte solo para esto.
+     * Crucecita chica de 3 ejes en el centro del objeto (pivote de rotacion o de movimiento) - se
+     * dibuja con el mismo mvpMatrix ya escalado del gizmo (gizmoScreenScale), asi que su tamano
+     * queda proporcional al resto del gizmo. Se usan los 3 ejes (no solo 2, billboard) para evitar
+     * el caso degenerado de verse como una linea chata si la camara queda alineada con uno de
+     * ellos - mas simple que armar una matriz billboard aparte solo para esto.
      */
     fun drawCenterCrosshair(mvpMatrix: FloatArray) {
         val s = 0.08f
@@ -495,7 +538,7 @@ class Gizmo3D {
         drawLines(mvpMatrix, makeFloatBuffer(vertices), makeFloatBuffer(colors), 6, 3f)
     }
 
-    /** Helper compartido: sube un par de buffers vertex/color al shader y dibuja como GL_LINES. Usado por drawTrackballRing y las 3 piezas nuevas del anillo activo (linea infinita, marca de angulo, crosshair). */
+    /** Helper compartido: sube un par de buffers vertex/color al shader y dibuja como GL_LINES. Usado por drawTrackballRing y las piezas extra del eje activo (linea infinita, marca de angulo, crosshair) en Move y Rotate. */
     private fun drawLines(mvpMatrix: FloatArray, vertexBuffer: FloatBuffer, colorBuffer: FloatBuffer, vertexCount: Int, lineWidth: Float) {
         GLES20.glUseProgram(program)
 

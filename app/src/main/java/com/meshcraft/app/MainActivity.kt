@@ -336,7 +336,7 @@ class MainActivity : Activity() {
         glView.onRotationChanged = { gizmoView.invalidate() }
         gizmoView.onAxisSelected = { targetX, targetY, axisChar -> animateCameraTo(targetX, targetY, axisChar) }
         glView.onTap = { x, y -> onViewportTap(x, y) }
-        glView.onDragMove = { dx, dy -> onViewportDragMove(dx, dy) }
+        glView.onDragMove = { dx, dy, x, y -> onViewportDragMove(dx, dy, x, y) }
         glView.onDragStart = { x, y -> onViewportDragStart(x, y) }
         glView.onDragEnd = { onViewportDragEnd() }
 
@@ -1435,6 +1435,7 @@ class MainActivity : Activity() {
             else -> null
         }
         glView.renderer.activeRotateAxis = null
+        glView.renderer.activeMoveAxis = if (currentLayoutTool == LayoutTool.MOVE) axisLocked else null
         gizmoLabelView.labelText = null
         if (currentLayoutTool == LayoutTool.ROTATE && axisLocked != null) {
             val axisNow = axisLocked!!
@@ -1448,10 +1449,11 @@ class MainActivity : Activity() {
         }
         gizmoLabelView.invalidate()
     }
-    /** ACTION_UP en el viewport: suelta el eje bloqueado, sea cual sea la herramienta activa - tambien limpia el resaltado del anillo agarrado (activeRotateAxis) y la etiqueta de texto, si habia una rotacion restringida en curso. */
+    /** ACTION_UP en el viewport: suelta el eje bloqueado, sea cual sea la herramienta activa - tambien limpia el resaltado del eje agarrado (activeRotateAxis/activeMoveAxis) y la etiqueta de texto, si habia una transformacion restringida en curso. */
     private fun onViewportDragEnd() {
         axisLocked = null
         glView.renderer.activeRotateAxis = null
+        glView.renderer.activeMoveAxis = null
         gizmoLabelView.labelText = null
         gizmoLabelView.invalidate()
     }
@@ -1480,7 +1482,7 @@ class MainActivity : Activity() {
      * herramientas sin nada para transformar. Devuelve true (arrastre consumido) siempre que una
      * de las tres este activa, se haya transformado algo o no.
      */
-    private fun onViewportDragMove(dx: Float, dy: Float): Boolean {
+    private fun onViewportDragMove(dx: Float, dy: Float, x: Float, y: Float): Boolean {
         if (currentMode != AppMode.LAYOUT) return false
         return when (currentLayoutTool) {
             LayoutTool.MOVE -> {
@@ -1495,6 +1497,7 @@ class MainActivity : Activity() {
             LayoutTool.ROTATE -> {
                 val axis = axisLocked
                 if (axis != null) {
+                    glView.renderer.updateActiveRotateCurrentDir(x, y, axis)
                     glView.renderer.rotateSelectedObjectOnAxis(dx, dy, axis)
                 } else {
                     glView.renderer.rotateSelectedObject(dx, dy)

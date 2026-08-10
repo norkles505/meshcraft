@@ -1,0 +1,47 @@
+# Qué hacer si `./compilar.bat` deja de encontrar el celular por wifi
+
+## Síntoma
+`./compilar.bat` dice algo como:
+```
+No hay nada por USB ni emulador. Probando conectar por WiFi...
+Conectando a 192.168.1.6:XXXXX por WiFi...
+cannot connect to 192.168.1.6:XXXXX: ...
+No se encontro ningun dispositivo (USB, emulador ni WiFi). Cancelando.
+```
+
+## Por qué pasa
+El puerto de "Depuración inalámbrica" (pantalla de Ajustes del celular) es **aleatorio y cambia solo** cada tanto tiempo o al reiniciar el celular. Cuando eso pasa, el puerto guardado en `wifi_device.txt` queda desactualizado y la conexión falla (rechazada o timeout).
+
+## Solución: fijar un puerto que no cambie (usar `adb tcpip`)
+
+Esto se hace **una sola vez por reinicio del celular** — después queda andando por wifi sin volver a tocar nada.
+
+1. Conectá el celular por cable USB.
+2. Confirmá que lo ve:
+   ```
+   adb devices
+   ```
+   Si aparece **más de una línea** con el mismo serial (por ejemplo una por USB y otra vieja por wifi tipo `adb-XXXX-...tcp`), hay que apuntar al dispositivo por serial en el siguiente paso.
+3. Fijá el puerto (reemplazá `AG5HBB4C04109082` por el serial que te mostró `adb devices`):
+   ```
+   adb -s AG5HBB4C04109082 tcpip 5555
+   ```
+   Tiene que responder: `restarting in TCP mode port: 5555`
+4. Desconectá el cable USB. El celular ahora escucha por wifi en el puerto **5555** fijo, mientras esté prendido y en la misma red.
+5. Editá `wifi_device.txt` (en la raíz del proyecto) para que tenga la IP actual del celular con el puerto 5555, por ejemplo:
+   ```
+   192.168.1.6:5555
+   ```
+   (la IP se puede confirmar en Ajustes > Opciones de desarrollador > Depuración inalámbrica > Dirección IP y puerto — usar solo la IP, ignorar el puerto random que muestra ahí).
+6. Corré `./compilar.bat` de nuevo. Debería conectar por wifi sin problema.
+
+
+Si despues de esto no funciona entonces ir a depuracion inalambrica del celular y desactivarla por 3 segundos y volverla a activar
+
+
+## Cuándo hay que repetir esto
+- Cada vez que **reiniciás el celular** (el modo `tcpip` no persiste al reiniciar).
+- Si cambia la **IP del celular** (por ejemplo si el router le asigna otra por DHCP) — en ese caso solo hace falta actualizar la IP en `wifi_device.txt`, no repetir todo el proceso de `adb tcpip`.
+
+## Nota
+Si en el paso 3 da error `more than one device/emulator`, es porque `adb devices` está viendo el celular por dos vías a la vez (USB + una sesión wifi vieja colgada). Usar `-s <serial>` como en el ejemplo resuelve eso.

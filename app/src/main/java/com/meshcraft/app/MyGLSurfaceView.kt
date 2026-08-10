@@ -27,7 +27,14 @@ class MyGLSurfaceView(context: Context) : GLSurfaceView(context) {
      * hace pan. A proposito no depende de isLocked: el candado de rotacion es sobre la camara, no
      * sobre mover objetos.
      */
-    var onDragMove: ((Float, Float) -> Boolean)? = null
+    /**
+     * screenX/screenY (parametros 3ro y 4to) son la posicion ABSOLUTA actual del dedo, ademas del
+     * delta dx/dy - los agrega el gizmo de rotacion (ver MainActivity.onViewportDragMove) para
+     * recalcular en vivo la marca de angulo mientras se arrastra un anillo (ver
+     * MyGLRenderer.updateActiveRotateCurrentDir), ya que esa cuenta necesita saber DONDE esta el
+     * dedo ahora, no solo cuanto se movio desde el frame anterior.
+     */
+    var onDragMove: ((Float, Float, Float, Float) -> Boolean)? = null
     /**
      * Se dispara en ACTION_DOWN, antes que cualquier otra logica - usado para el hit-test del
      * gizmo de ejes (ver MainActivity.onViewportDragStart): si el dedo toco una flecha, el
@@ -60,7 +67,7 @@ class MyGLSurfaceView(context: Context) : GLSurfaceView(context) {
                 val dx = x - previousX
                 val dy = y - previousY
 
-                val handledByDrag = onDragMove?.invoke(dx, dy) ?: false
+                val handledByDrag = onDragMove?.invoke(dx, dy, x, y) ?: false
                 if (handledByDrag) {
                     requestRender()
                 } else if (!isLocked) {
