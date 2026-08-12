@@ -8,13 +8,14 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /** Que geometria dibuja Gizmo3D.draw en este frame - una por herramienta con arrastre restringido a eje. */
-enum class GizmoMode { MOVE, ROTATE }
+enum class GizmoMode { MOVE, ROTATE, SCALE }
 
 /**
  * Gizmo de transformacion por eje, dibujado en espacio mundo centrado en el objeto seleccionado -
- * ver charla con el usuario. Move usa flechas (shaft + tip), Rotate usa anillos - ambos comparten
- * shaders, colores por eje y el criterio de tamano constante en pantalla (gizmoScreenScale en
- * MyGLRenderer). Scale todavia no tiene su geometria (queda para cuando se implemente su gizmo).
+ * ver charla con el usuario. Move usa flechas (shaft + tip), Rotate usa anillos, Scale usa
+ * cubitos en la punta de cada eje (igual que el gizmo real de Blender) - los 3 comparten shaders,
+ * colores por eje y el criterio de tamano constante en pantalla (gizmoScreenScale en
+ * MyGLRenderer).
  *
  * Geometria por eje, en unidades locales (se escala y traslada en MyGLRenderer.onDrawFrame):
  * - Move: shaft (linea) + tip (piramide de base cuadrada) a lo largo de +X para el eje X; los
@@ -42,14 +43,22 @@ enum class GizmoMode { MOVE, ROTATE }
  *   pide tambien drawInfiniteAxisLine (linea que cruza toda la pantalla), drawStartAngleMarker
  *   (linea punteada del angulo de arranque) y drawCenterCrosshair (marca del pivote) - las 4
  *   piezas juntas replican el gizmo de rotacion agarrado de Blender.
+ * - Scale: mismo shaft (linea) que Move a lo largo de cada eje, pero terminando en un cubito
+ *   solido (SCALE_BOX_HALF_SIZE) en vez de una piramide - ver addScaleBoxGeometry, que arma el
+ *   cubo generico via pointOnAxis (igual criterio ciclico que el resto de la geometria). Reusa
+ *   el mismo anillo trackball blanco que Rotate (drawTrackballRing, ver MyGLRenderer.onDrawFrame)
+ *   como referencia visual para el escalado uniforme libre (arrastre que no empieza sobre un eje -
+ *   ver MyGLRenderer.scaleSelectedObject, ya existia antes de este gizmo). Con un eje agarrado
+ *   (activeAxis != null), mismo criterio que Move: se dibuja SOLO ese eje, mas grueso, con linea
+ *   infinita + crosshair central (ver MyGLRenderer.onDrawFrame).
  */
 class Gizmo3D {
 
     /**
      * Unica fuente de verdad para las medidas del gizmo. MyGLRenderer (hitTestGizmoAxis,
-     * hitTestGizmoRotateAxis) las referencia directamente en vez de repetir los numeros - antes
-     * estaban duplicadas a mano entre dibujo y hit-test, con riesgo de desincronizarse en
-     * silencio si alguien cambiaba una sin la otra.
+     * hitTestGizmoRotateAxis, hitTestGizmoScaleAxis) las referencia directamente en vez de
+     * repetir los numeros - antes estaban duplicadas a mano entre dibujo y hit-test, con riesgo
+     * de desincronizarse en silencio si alguien cambiaba una sin la otra.
      */
     companion object {
         const val SHAFT_LENGTH = 0.9f
@@ -65,6 +74,12 @@ class Gizmo3D {
         const val MOVE_LINE_VERTS_PER_AXIS = 2
         /** Vertices (GL_TRIANGLES) que aporta cada eje al tip de Move en moveTriVertices - ver addMoveAxisGeometry (piramide de base cuadrada = 4 triangulos * 3 vertices). */
         const val MOVE_TRI_VERTS_PER_AXIS = 12
+        /** Medio-lado del cubito en la punta de cada eje de Scale (ver addScaleBoxGeometry) - mismo shaft que Move (SHAFT_LENGTH) pero terminando en un cubo en vez de una piramide, igual que el gizmo de Blender. */
+        const val SCALE_BOX_HALF_SIZE = 0.06f
+        /** Vertices (GL_LINES) que aporta cada eje al shaft de Scale en scaleLineVertices - mismo criterio que MOVE_LINE_VERTS_PER_AXIS. */
+        const val SCALE_LINE_VERTS_PER_AXIS = 2
+        /** Vertices (GL_TRIANGLES) que aporta cada eje al cubito de Scale en scaleTriVertices - ver addScaleBoxGeometry (cubo = 6 caras * 2 triangulos * 3 vertices). */
+        const val SCALE_TRI_VERTS_PER_AXIS = 36
     }
 
     private val vertexShaderCode = """
@@ -110,6 +125,14 @@ class Gizmo3D {
     private val moveTriVertices = mutableListOf<Float>()
     private val moveTriColors = mutableListOf<Float>()
 
+    // Geometria de Scale: mismo shaft (linea) que Move + cubito solido en la punta en vez de
+    // piramide - ver addScaleBoxGeometry. Mismo criterio de orden fijo X/Y/Z que Move (ver init),
+    // para poder dibujar solo un eje via offset (SCALE_LINE_VERTS_PER_AXIS / SCALE_TRI_VERTS_PER_AXIS).
+    private val scaleLineVertices = mutableListOf<Float>()
+    private val scaleLineColors = mutableListOf<Float>()
+    private val scaleTriVertices = mutableListOf<Float>()
+    private val scaleTriColors = mutableListOf<Float>()
+
     // Geometria BASE de Rotate: los 3 anillos de color completos (48 segmentos c/u). De aca sale,
     // cada frame, el subconjunto de segmentos "de frente" (ver updateRotateVisibleSegments) - esta
     // lista completa nunca se dibuja directamente, es solo la fuente de datos.
@@ -123,10 +146,11 @@ class Gizmo3D {
      * comentario en el bloque de init sobre por que va en 1 y no en 2) pero un poco mas grande
      * (TRACKBALL_RADIUS_SCALE) y en su propio buffer, separado de los 3 de color - se dibuja
      * aparte (drawTrackballRing) con su propia matriz billboard armada en MyGLRenderer. Es solo un
-     * indicador visual, sin su propio hit-test (la rotacion libre ya existe via
-     * rotateSelectedObject cuando el arrastre no empieza sobre ninguno de los 3 anillos de color).
-     * Se dibuja completo, sin recorte: al ser siempre de cara a la camara, no tiene "mitad de
-     * atras" que ocultar.
+     * indicador visual (compartido por Rotate y Scale, ver comentario de clase), sin su propio
+     * hit-test (la rotacion libre ya existe via rotateSelectedObject, y el escalado uniforme libre
+     * via scaleSelectedObject, cuando el arrastre no empieza sobre ninguno de los 3 anillos/ejes
+     * de color). Se dibuja completo, sin recorte: al ser siempre de cara a la camara, no tiene
+     * "mitad de atras" que ocultar.
      */
     private val trackballLineVertices = mutableListOf<Float>()
     private val trackballLineColors = mutableListOf<Float>()
@@ -137,6 +161,12 @@ class Gizmo3D {
     private val moveTriVertexBuffer: FloatBuffer
     private val moveTriColorBuffer: FloatBuffer
     private val moveTriVertexCount: Int
+    private val scaleLineVertexBuffer: FloatBuffer
+    private val scaleLineColorBuffer: FloatBuffer
+    private val scaleLineVertexCount: Int
+    private val scaleTriVertexBuffer: FloatBuffer
+    private val scaleTriColorBuffer: FloatBuffer
+    private val scaleTriVertexCount: Int
     private val trackballLineVertexBuffer: FloatBuffer
     private val trackballLineColorBuffer: FloatBuffer
     private val trackballLineVertexCount: Int
@@ -159,6 +189,7 @@ class Gizmo3D {
     init {
         for (def in axisDefs) {
             addMoveAxisGeometry(def.alongComponent, def.color)
+            addScaleBoxGeometry(def.alongComponent, def.color)
             addRingGeometry(def.alongComponent, def.color, RING_RADIUS, rotateLineVertices, rotateLineColors)
             repeat(RING_SEGMENTS) { rotateSegmentAlongComponent.add(def.alongComponent) }
         }
@@ -180,6 +211,14 @@ class Gizmo3D {
         moveTriColorBuffer = makeFloatBuffer(moveTriColors.toFloatArray())
         moveTriVertexCount = moveTriVertices.size / 3
 
+        scaleLineVertexBuffer = makeFloatBuffer(scaleLineVertices.toFloatArray())
+        scaleLineColorBuffer = makeFloatBuffer(scaleLineColors.toFloatArray())
+        scaleLineVertexCount = scaleLineVertices.size / 3
+
+        scaleTriVertexBuffer = makeFloatBuffer(scaleTriVertices.toFloatArray())
+        scaleTriColorBuffer = makeFloatBuffer(scaleTriColors.toFloatArray())
+        scaleTriVertexCount = scaleTriVertices.size / 3
+
         trackballLineVertexBuffer = makeFloatBuffer(trackballLineVertices.toFloatArray())
         trackballLineColorBuffer = makeFloatBuffer(trackballLineColors.toFloatArray())
         trackballLineVertexCount = trackballLineVertices.size / 3
@@ -195,9 +234,10 @@ class Gizmo3D {
 
     /**
      * Punto generico de geometria del gizmo. alongComponent (0=X, 1=Y, 2=Z) indica que indice del
-     * vertice recibe la coordenada "along" (a lo largo del eje, usada por Move); p1/p2 reciben las
-     * coordenadas perpendiculares (base de la piramide en Move, seno/coseno en Rotate), en orden
-     * ciclico. Compartido por addMoveAxisGeometry y addRingGeometry para no repetir el mapeo.
+     * vertice recibe la coordenada "along" (a lo largo del eje, usada por Move/Scale); p1/p2
+     * reciben las coordenadas perpendiculares (base de la piramide en Move, esquinas del cubo en
+     * Scale, seno/coseno en Rotate), en orden ciclico. Compartido por addMoveAxisGeometry,
+     * addScaleBoxGeometry y addRingGeometry para no repetir el mapeo.
      */
     private fun pointOnAxis(alongComponent: Int, along: Float, p1: Float, p2: Float): FloatArray {
         return when (alongComponent) {
@@ -227,6 +267,50 @@ class Gizmo3D {
             moveTriVertices.addAll(b1.toList())
             moveTriVertices.addAll(b2.toList())
             repeat(3) { moveTriColors.addAll(color.toList()) }
+        }
+    }
+
+    /**
+     * Arma shaft (misma linea que Move) + cubito solido en la punta para un eje de Scale - mismo
+     * patron que addMoveAxisGeometry, pero el tip es un cubo (8 esquinas, 6 caras) en vez de una
+     * piramide de 4 caras. Las 8 esquinas se arman variando +-SCALE_BOX_HALF_SIZE en las 3
+     * dimensiones locales (da = a lo largo del eje, offset desde el centro del cubo en
+     * SHAFT_LENGTH; d1/d2 = perpendiculares) y mapeando cada una a coordenadas de mundo via
+     * pointOnAxis - igual que el resto de la geometria del gizmo, generico para cualquier eje.
+     * Sin culling ni normales (el shader del gizmo es de color plano, sin luz), asi que el orden
+     * de los vertices de cada cara no importa para que se vea bien.
+     */
+    private fun addScaleBoxGeometry(alongComponent: Int, color: FloatArray) {
+        scaleLineVertices.addAll(pointOnAxis(alongComponent, 0f, 0f, 0f).toList())
+        scaleLineVertices.addAll(pointOnAxis(alongComponent, SHAFT_LENGTH, 0f, 0f).toList())
+        repeat(2) { scaleLineColors.addAll(color.toList()) }
+
+        val h = SCALE_BOX_HALF_SIZE
+        val center = SHAFT_LENGTH
+        // Las 8 esquinas del cubo, indexadas por bit: bit2=da (along), bit1=d1, bit0=d2.
+        val corners = Array(8) { i ->
+            val da = if (i and 4 == 0) -h else h
+            val d1 = if (i and 2 == 0) -h else h
+            val d2 = if (i and 1 == 0) -h else h
+            pointOnAxis(alongComponent, center + da, d1, d2)
+        }
+        // 6 caras del cubo (cada una como 2 triangulos), referenciando las esquinas de arriba.
+        val faces = listOf(
+            intArrayOf(0, 1, 3, 2), // da = -h (cara interna, hacia el shaft)
+            intArrayOf(4, 6, 7, 5), // da = +h (cara externa, punta del eje)
+            intArrayOf(0, 2, 6, 4), // d1 = -h
+            intArrayOf(1, 5, 7, 3), // d1 = +h
+            intArrayOf(0, 4, 5, 1), // d2 = -h
+            intArrayOf(2, 3, 7, 6)  // d2 = +h
+        )
+        for (face in faces) {
+            val a = corners[face[0]]
+            val b = corners[face[1]]
+            val c = corners[face[2]]
+            val d = corners[face[3]]
+            scaleTriVertices.addAll(a.toList()); scaleTriVertices.addAll(b.toList()); scaleTriVertices.addAll(c.toList())
+            scaleTriVertices.addAll(a.toList()); scaleTriVertices.addAll(c.toList()); scaleTriVertices.addAll(d.toList())
+            repeat(6) { scaleTriColors.addAll(color.toList()) }
         }
     }
 
@@ -315,7 +399,7 @@ class Gizmo3D {
         else -> 2
     }
 
-    /** Color propio de un eje (mismo que usan su anillo/flecha) - usado por MyGLRenderer para pintar la linea infinita y la marca de angulo de arranque con el color del eje activo, en vez de blanco (ver charla con el usuario, referencia visual real de Blender). */
+    /** Color propio de un eje (mismo que usan su anillo/flecha/cubito) - usado por MyGLRenderer para pintar la linea infinita y la marca de angulo de arranque con el color del eje activo, en vez de blanco (ver charla con el usuario, referencia visual real de Blender). */
     fun colorForAxis(axis: Char): FloatArray = axisDefs[charToAlongComponent(axis)].color
 
     /**
@@ -369,12 +453,13 @@ class Gizmo3D {
      * pueda tapar parcialmente, este es el lugar para volver a habilitarlo.
      *
      * localViewDir es necesario para GizmoMode.ROTATE sin eje activo (ver
-     * updateRotateVisibleSegments) - viene de MyGLRenderer.computeWorldViewDirection(). Para MOVE
-     * no se usa, se puede pasar null. activeAxis (X/Y/Z) es el eje que se esta arrastrando ahora
-     * mismo (ver MainActivity.axisLocked, sincronizado a MyGLRenderer.activeRotateAxis /
-     * activeMoveAxis segun el modo) - si no es null, en ROTATE se ignora localViewDir y se dibuja
-     * solo ese anillo, completo, en su color de eje (ver updateRotateActiveAxisOnly); en MOVE se
-     * dibuja solo esa flecha, mas gruesa (ver MOVE_LINE_VERTS_PER_AXIS/MOVE_TRI_VERTS_PER_AXIS).
+     * updateRotateVisibleSegments) - viene de MyGLRenderer.computeWorldViewDirection(). Para
+     * MOVE/SCALE no se usa, se puede pasar null. activeAxis (X/Y/Z) es el eje que se esta
+     * arrastrando ahora mismo (ver MainActivity.axisLocked, sincronizado a
+     * MyGLRenderer.activeRotateAxis / activeMoveAxis / activeScaleAxis segun el modo) - si no es
+     * null, en ROTATE se ignora localViewDir y se dibuja solo ese anillo, completo, en su color de
+     * eje (ver updateRotateActiveAxisOnly); en MOVE/SCALE se dibuja solo esa flecha/cubito, mas
+     * grueso (ver MOVE_LINE_VERTS_PER_AXIS/MOVE_TRI_VERTS_PER_AXIS y sus equivalentes SCALE_*).
      * Si activeAxis es null y (en ROTATE) localViewDir tambien, no se dibuja nada ese frame en vez
      * de mostrar los 3 anillos sin filtrar.
      */
@@ -425,6 +510,37 @@ class Gizmo3D {
                 GLES20.glVertexAttribPointer(colorHandle, 4, GLES20.GL_FLOAT, false, 0, moveTriColorBuffer)
                 GLES20.glDrawArrays(GLES20.GL_TRIANGLES, triFirst, triCount)
             }
+            GizmoMode.SCALE -> {
+                // Mismo criterio exacto que MOVE (shaft + geometria solida en la punta, offset
+                // por eje via glDrawArrays), solo que la geometria de la punta es scaleTri* (cubo)
+                // en vez de moveTri* (piramide) - ver addScaleBoxGeometry.
+                val lineFirst: Int
+                val lineCount: Int
+                val triFirst: Int
+                val triCount: Int
+                if (activeAxis != null) {
+                    val axisIndex = charToAlongComponent(activeAxis)
+                    lineFirst = axisIndex * SCALE_LINE_VERTS_PER_AXIS
+                    lineCount = SCALE_LINE_VERTS_PER_AXIS
+                    triFirst = axisIndex * SCALE_TRI_VERTS_PER_AXIS
+                    triCount = SCALE_TRI_VERTS_PER_AXIS
+                    GLES20.glLineWidth(6f)
+                } else {
+                    lineFirst = 0
+                    lineCount = scaleLineVertexCount
+                    triFirst = 0
+                    triCount = scaleTriVertexCount
+                    GLES20.glLineWidth(4f)
+                }
+
+                GLES20.glVertexAttribPointer(posHandle, 3, GLES20.GL_FLOAT, false, 0, scaleLineVertexBuffer)
+                GLES20.glVertexAttribPointer(colorHandle, 4, GLES20.GL_FLOAT, false, 0, scaleLineColorBuffer)
+                GLES20.glDrawArrays(GLES20.GL_LINES, lineFirst, lineCount)
+
+                GLES20.glVertexAttribPointer(posHandle, 3, GLES20.GL_FLOAT, false, 0, scaleTriVertexBuffer)
+                GLES20.glVertexAttribPointer(colorHandle, 4, GLES20.GL_FLOAT, false, 0, scaleTriColorBuffer)
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLES, triFirst, triCount)
+            }
             GizmoMode.ROTATE -> {
                 // Con eje activo (arrastre en curso): solo ese anillo, completo y en su color de
                 // eje, mas grueso para que resalte. Sin eje activo: comportamiento normal, arcos
@@ -457,7 +573,8 @@ class Gizmo3D {
      * propia matriz "billboard" (armada en MyGLRenderer.onDrawFrame cancelando la rotacion de
      * orbita), a diferencia de los anillos de color que si tienen que rotar con la escena. Linea
      * mas fina que los anillos de color (2f) para que se lea como una referencia secundaria, no
-     * como un cuarto eje - mismo criterio visual que usa Blender para su anillo de rotacion libre.
+     * como un cuarto eje - mismo criterio visual que usa Blender para su anillo de rotacion libre
+     * (y, reusado, para el indicador de escalado uniforme libre en Scale - ver MyGLRenderer.onDrawFrame).
      */
     fun drawTrackballRing(mvpMatrix: FloatArray) {
         drawLines(mvpMatrix, trackballLineVertexBuffer, trackballLineColorBuffer, trackballLineVertexCount, 2f)
@@ -465,7 +582,7 @@ class Gizmo3D {
 
     /**
      * Linea que cruza toda la pantalla a lo largo del eje activo, centrada en el objeto -
-     * referencia visual de Blender al mover o rotar con un eje restringido, para ver la
+     * referencia visual de Blender al mover, rotar o escalar con un eje restringido, para ver la
      * orientacion del eje mas alla del tamano chico del gizmo. mvpMatrix debe traer ya la
      * traslacion al objeto aplicada pero SIN el escalado de gizmoScreenScale (ver
      * MyGLRenderer.onDrawFrame) - la longitud se maneja aca en unidades de mundo reales
@@ -518,11 +635,11 @@ class Gizmo3D {
     }
 
     /**
-     * Crucecita chica de 3 ejes en el centro del objeto (pivote de rotacion o de movimiento) - se
-     * dibuja con el mismo mvpMatrix ya escalado del gizmo (gizmoScreenScale), asi que su tamano
-     * queda proporcional al resto del gizmo. Se usan los 3 ejes (no solo 2, billboard) para evitar
-     * el caso degenerado de verse como una linea chata si la camara queda alineada con uno de
-     * ellos - mas simple que armar una matriz billboard aparte solo para esto.
+     * Crucecita chica de 3 ejes en el centro del objeto (pivote de rotacion, movimiento o
+     * escalado) - se dibuja con el mismo mvpMatrix ya escalado del gizmo (gizmoScreenScale), asi
+     * que su tamano queda proporcional al resto del gizmo. Se usan los 3 ejes (no solo 2,
+     * billboard) para evitar el caso degenerado de verse como una linea chata si la camara queda
+     * alineada con uno de ellos - mas simple que armar una matriz billboard aparte solo para esto.
      */
     fun drawCenterCrosshair(mvpMatrix: FloatArray) {
         val s = 0.08f
@@ -538,7 +655,7 @@ class Gizmo3D {
         drawLines(mvpMatrix, makeFloatBuffer(vertices), makeFloatBuffer(colors), 6, 3f)
     }
 
-    /** Helper compartido: sube un par de buffers vertex/color al shader y dibuja como GL_LINES. Usado por drawTrackballRing y las piezas extra del eje activo (linea infinita, marca de angulo, crosshair) en Move y Rotate. */
+    /** Helper compartido: sube un par de buffers vertex/color al shader y dibuja como GL_LINES. Usado por drawTrackballRing y las piezas extra del eje activo (linea infinita, marca de angulo, crosshair) en Move, Rotate y Scale. */
     private fun drawLines(mvpMatrix: FloatArray, vertexBuffer: FloatBuffer, colorBuffer: FloatBuffer, vertexCount: Int, lineWidth: Float) {
         GLES20.glUseProgram(program)
 

@@ -41,6 +41,8 @@ class MainActivity : Activity() {
     private lateinit var moveToolBtn: ImageView
     private lateinit var rotateToolBtn: ImageView
     private lateinit var scaleToolBtn: ImageView
+    /** Selector Global/Local del gizmo activo (ver TransformOrientation en MyGLRenderer) - solo visible con Move/Rotate/Scale, no con Select (ver updateOrientationToggleVisibility). */
+    private lateinit var orientationToggleBtn: ImageView
 
     private lateinit var modelingToolWrapper: View
     private lateinit var modelingToolColumnInner: LinearLayout
@@ -59,8 +61,8 @@ class MainActivity : Activity() {
     /**
      * Eje al que quedo restringido el arrastre actual (X/Y/Z), si empezo tocando el gizmo (ver
      * onViewportDragStart) - null si el arrastre es libre. Aplica con Move (flechas, ver
-     * hitTestGizmoAxis) y Rotate (anillos, ver hitTestGizmoRotateAxis) activos; Scale por eje
-     * queda para despues (ver charla con el usuario).
+     * hitTestGizmoAxis), Rotate (anillos, ver hitTestGizmoRotateAxis) y Scale (cubitos, ver
+     * hitTestGizmoScaleAxis) activos.
      */
     private var axisLocked: Char? = null
 
@@ -769,7 +771,22 @@ class MainActivity : Activity() {
     }
 
     private fun onSelectMenuAction(action: String) {
-        // TODO: conectar a la logica real de seleccion una vez que exista el modelo de escena editable.
+        // Solo Layout (Object Mode): None deselecciona objetos reales via el mismo sistema de
+        // seleccion que ya usa el tap en el viewport. Modeling comparte esta misma funcion para
+        // su propio menu Select, pero ahi "None" todavia no tiene nada real que hacer (no existe
+        // geometria editable en Edit Mode todavia) - sigue en Toast para ese caso.
+        if (currentMode == AppMode.LAYOUT && action == "None") {
+            glView.renderer.deselectAll()
+            glView.requestRender()
+            return
+        }
+        // All/Invert quedan pendientes a proposito: la app solo soporta un objeto seleccionado a
+        // la vez (ver moveSelectedObject/rotateSelectedObject/etc, todos usan firstOrNull), asi
+        // que seleccionar "todos" dejaria varios objetos con el contorno naranja pero Move/Rotate/
+        // Scale/Delete solo afectarian al primero - resultado inconsistente. Implementarlos bien
+        // requiere soporte real de multi-seleccion (gizmo compartido, transformar varios objetos
+        // a la vez, etc.) - ver charla con el usuario, queda como su propio hito futuro.
+        // TODO: conectar el resto de las acciones una vez que exista ese soporte (o Edit Mode, para Modeling).
         Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
     }
 
@@ -967,7 +984,25 @@ class MainActivity : Activity() {
         for (entry in meshPrimitiveEntries) {
             menuColumn.addView(buildAddMenuItem(entry.iconRes, entry.label) {
                 popup.dismiss()
-                if (entry.label == "Cube") {
+                if (entry.label == "Plane") {
+                    addPlaneObject()
+                } else if (entry.label == "Ico Sphere") {
+                    addIcoSphereObject()
+                } else if (entry.label == "UV Sphere") {
+                    addUvSphereObject()
+                } else if (entry.label == "Circle") {
+                    addCircleObject()
+                } else if (entry.label == "Cylinder") {
+                    addCylinderObject()
+                } else if (entry.label == "Cone") {
+                    addConeObject()
+                } else if (entry.label == "Grid") {
+                    addGridObject()
+                } else if (entry.label == "Torus") {
+                    addTorusObject()
+                } else if (entry.label == "Monkey") {
+                    addMonkeyObject()
+                } else if (entry.label == "Cube") {
                     addCubeObject()
                 } else {
                     onAddMenuAction(entry.label)
@@ -986,6 +1021,60 @@ class MainActivity : Activity() {
      */
     private fun addCubeObject() {
         glView.renderer.addCube()
+        glView.requestRender()
+    }
+
+    /** Add > Mesh > Plane real, mismo patron que addCubeObject pero via renderer.addPlane(). */
+    private fun addPlaneObject() {
+        glView.renderer.addPlane()
+        glView.requestRender()
+    }
+
+    /** Add > Mesh > Circle real, mismo patron que addPlaneObject pero via renderer.addCircle(). */
+    private fun addCircleObject() {
+        glView.renderer.addCircle()
+        glView.requestRender()
+    }
+
+    /** Add > Mesh > UV Sphere real, mismo patron que addCircleObject pero via renderer.addUvSphere(). */
+    private fun addUvSphereObject() {
+        glView.renderer.addUvSphere()
+        glView.requestRender()
+    }
+
+    /** Add > Mesh > Ico Sphere real, mismo patron que addUvSphereObject pero via renderer.addIcoSphere(). */
+    private fun addIcoSphereObject() {
+        glView.renderer.addIcoSphere()
+        glView.requestRender()
+    }
+
+    /** Add > Mesh > Cylinder real, mismo patron que addIcoSphereObject pero via renderer.addCylinder(). */
+    private fun addCylinderObject() {
+        glView.renderer.addCylinder()
+        glView.requestRender()
+    }
+
+    /** Add > Mesh > Cone real, mismo patron que addCylinderObject pero via renderer.addCone(). */
+    private fun addConeObject() {
+        glView.renderer.addCone()
+        glView.requestRender()
+    }
+
+    /** Add > Mesh > Torus real, mismo patron que addConeObject pero via renderer.addTorus(). */
+    private fun addTorusObject() {
+        glView.renderer.addTorus()
+        glView.requestRender()
+    }
+
+    /** Add > Mesh > Grid real, mismo patron que addTorusObject pero via renderer.addGrid(). */
+    private fun addGridObject() {
+        glView.renderer.addGrid()
+        glView.requestRender()
+    }
+
+    /** Add > Mesh > Monkey real, mismo patron que addGridObject pero via renderer.addMonkey(). */
+    private fun addMonkeyObject() {
+        glView.renderer.addMonkey()
         glView.requestRender()
     }
 
@@ -1271,10 +1360,27 @@ class MainActivity : Activity() {
     }
 
     private fun onObjectMenuAction(action: String) {
-        // TODO: conectar a la logica real de cada accion una vez que exista el modelo de escena editable.
-        Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
+        when (action) {
+            "Delete" -> {
+                val hadSelection = glView.renderer.deleteSelectedObject()
+                glView.requestRender()
+                if (!hadSelection) Toast.makeText(this, "No hay objeto seleccionado", Toast.LENGTH_SHORT).show()
+            }
+            "Clear" -> {
+                val hadSelection = glView.renderer.clearSelectedObjectTransform()
+                glView.requestRender()
+                if (!hadSelection) Toast.makeText(this, "No hay objeto seleccionado", Toast.LENGTH_SHORT).show()
+            }
+            "Duplicate Objects" -> {
+                val duplicate = glView.renderer.duplicateSelectedObject()
+                glView.requestRender()
+                if (duplicate == null) Toast.makeText(this, "No hay objeto seleccionado", Toast.LENGTH_SHORT).show()
+            }
+            else -> {
+                Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
+            }
+        }
     }
-
     private fun buildSimpleMenuRow(label: String, onClick: () -> Unit): LinearLayout {
         val density = resources.displayMetrics.density
         val row = LinearLayout(this)
@@ -1309,11 +1415,15 @@ class MainActivity : Activity() {
         moveToolBtn = createIconButton(R.drawable.ic_move)
         rotateToolBtn = createIconButton(R.drawable.ic_rotate)
         scaleToolBtn = createIconButton(R.drawable.ic_scale)
+        // Icono inicial Local (ver default de TransformOrientation en MyGLRenderer) - se actualiza
+        // en cada toggle (ver toggleTransformOrientation) para reflejar siempre el estado actual.
+        orientationToggleBtn = createIconButton(R.drawable.ic_orientation_local)
 
         selectToolBtn.setOnClickListener { setLayoutTool(LayoutTool.SELECT) }
         moveToolBtn.setOnClickListener { setLayoutTool(LayoutTool.MOVE) }
         rotateToolBtn.setOnClickListener { setLayoutTool(LayoutTool.ROTATE) }
         scaleToolBtn.setOnClickListener { setLayoutTool(LayoutTool.SCALE) }
+        orientationToggleBtn.setOnClickListener { toggleTransformOrientation() }
 
         val spacing = (8 * density).toInt()
         for (btn in listOf(selectToolBtn, moveToolBtn, rotateToolBtn, scaleToolBtn)) {
@@ -1321,10 +1431,46 @@ class MainActivity : Activity() {
             column.addView(btn)
         }
         (selectToolBtn.layoutParams as LinearLayout.LayoutParams).topMargin = 0
+        // Separado con el doble de margen de las 4 herramientas basicas, para marcar visualmente
+        // que es una propiedad de esas herramientas y no una herramienta mas (ver charla con el usuario).
+        (orientationToggleBtn.layoutParams as LinearLayout.LayoutParams).topMargin = spacing * 2
+        column.addView(orientationToggleBtn)
+        updateOrientationToggleVisibility()
 
         updateLayoutToolHighlight()
 
         return column
+    }
+
+    /**
+     * Actualiza la visibilidad de orientationToggleBtn: visible solo con Move/Rotate/Scale (donde
+     * hay gizmo dibujado), oculto con Select (no habria nada en pantalla que el boton afecte).
+     */
+    private fun updateOrientationToggleVisibility() {
+        orientationToggleBtn.visibility = if (currentLayoutTool == LayoutTool.SELECT) View.GONE else View.VISIBLE
+    }
+
+    /**
+     * Alterna transformOrientation entre GLOBAL y LOCAL (ver enum en MyGLRenderer) y actualiza el
+     * icono del boton para reflejar el estado nuevo - mismo criterio que el resto de los toggles
+     * (handButton/lockButton), pero con icono variable en vez de resaltado, ya que el icono mismo
+     * ya comunica en cual de los dos estados esta. Ademas muestra un Toast corto (ver charla con
+     * el usuario) confirmando "Global" o "Local" - el icono ya lo comunica visualmente, pero el
+     * toast lo deja explicito en el momento justo de tocar el boton.
+     */
+    private fun toggleTransformOrientation() {
+        val renderer = glView.renderer
+        renderer.transformOrientation = if (renderer.transformOrientation == TransformOrientation.GLOBAL) {
+            TransformOrientation.LOCAL
+        } else {
+            TransformOrientation.GLOBAL
+        }
+        val isGlobal = renderer.transformOrientation == TransformOrientation.GLOBAL
+        orientationToggleBtn.setImageResource(
+            if (isGlobal) R.drawable.ic_orientation_global else R.drawable.ic_orientation_local
+        )
+        Toast.makeText(this, if (isGlobal) "Global" else "Local", Toast.LENGTH_SHORT).show()
+        glView.requestRender()
     }
 
     /**
@@ -1397,15 +1543,17 @@ class MainActivity : Activity() {
     }
 
     private fun setLayoutTool(tool: LayoutTool) {
-        // El gizmo se muestra con Move (flechas) y Rotate (anillos) - las dos herramientas que ya
-        // tienen arrastre restringido a eje implementado. Scale por eje queda para despues, requiere
-        // cambios al modelo de datos (scale float -> scaleX/Y/Z) - ver charla con el usuario.
+        // El gizmo se muestra con Move (flechas), Rotate (anillos) y Scale (cubitos) - las 3
+        // herramientas que ya tienen arrastre restringido a eje implementado (ver
+        // hitTestGizmoAxis/hitTestGizmoRotateAxis/hitTestGizmoScaleAxis en MyGLRenderer).
         glView.renderer.gizmoMode = when (tool) {
             LayoutTool.MOVE -> GizmoMode.MOVE
             LayoutTool.ROTATE -> GizmoMode.ROTATE
+            LayoutTool.SCALE -> GizmoMode.SCALE
             else -> null
         }
         currentLayoutTool = tool
+        updateOrientationToggleVisibility()
         updateLayoutToolHighlight()
         // Move/Rotate/Scale ya funcionan via onViewportDragMove/glView.onDragMove (libre, o
         // restringido a eje si el gizmo esta activo - ver onViewportDragStart/axisLocked);
@@ -1420,22 +1568,29 @@ class MainActivity : Activity() {
     }
 
     /**
-     * ACTION_DOWN en el viewport: si estamos en Layout con Move o Rotate activos y hay un objeto
-     * seleccionado, intenta el hit-test contra el gizmo correspondiente (flechas para Move via
-     * hitTestGizmoAxis, anillos para Rotate via hitTestGizmoRotateAxis). Si el dedo toco el gizmo,
-     * el arrastre que sigue queda restringido a ese eje (ver onViewportDragMove); si no, cae al
-     * gesto libre de siempre.
+     * ACTION_DOWN en el viewport: si estamos en Layout con Move, Rotate o Scale activos y hay un
+     * objeto seleccionado, intenta el hit-test contra el gizmo correspondiente (flechas para Move
+     * via hitTestGizmoAxis, anillos para Rotate via hitTestGizmoRotateAxis, cubitos para Scale via
+     * hitTestGizmoScaleAxis). Si el dedo toco el gizmo, el arrastre que sigue queda restringido a
+     * ese eje (ver onViewportDragMove); si no, cae al gesto libre de siempre.
      */
     private fun onViewportDragStart(x: Float, y: Float) {
         axisLocked = null
         if (currentMode != AppMode.LAYOUT) return
+        if (currentLayoutTool == LayoutTool.MOVE || currentLayoutTool == LayoutTool.ROTATE || currentLayoutTool == LayoutTool.SCALE) {
+            if (glView.renderer.sceneObjects.any { it.selected }) {
+                glView.renderer.pushUndoSnapshot()
+            }
+        }
         axisLocked = when (currentLayoutTool) {
             LayoutTool.MOVE -> glView.renderer.hitTestGizmoAxis(x, y)
             LayoutTool.ROTATE -> glView.renderer.hitTestGizmoRotateAxis(x, y)
+            LayoutTool.SCALE -> glView.renderer.hitTestGizmoScaleAxis(x, y)
             else -> null
         }
         glView.renderer.activeRotateAxis = null
         glView.renderer.activeMoveAxis = if (currentLayoutTool == LayoutTool.MOVE) axisLocked else null
+        glView.renderer.activeScaleAxis = if (currentLayoutTool == LayoutTool.SCALE) axisLocked else null
         gizmoLabelView.labelText = null
         if (currentLayoutTool == LayoutTool.ROTATE && axisLocked != null) {
             val axisNow = axisLocked!!
@@ -1449,11 +1604,12 @@ class MainActivity : Activity() {
         }
         gizmoLabelView.invalidate()
     }
-    /** ACTION_UP en el viewport: suelta el eje bloqueado, sea cual sea la herramienta activa - tambien limpia el resaltado del eje agarrado (activeRotateAxis/activeMoveAxis) y la etiqueta de texto, si habia una transformacion restringida en curso. */
+    /** ACTION_UP en el viewport: suelta el eje bloqueado, sea cual sea la herramienta activa - tambien limpia el resaltado del eje agarrado (activeRotateAxis/activeMoveAxis/activeScaleAxis) y la etiqueta de texto, si habia una transformacion restringida en curso. */
     private fun onViewportDragEnd() {
         axisLocked = null
         glView.renderer.activeRotateAxis = null
         glView.renderer.activeMoveAxis = null
+        glView.renderer.activeScaleAxis = null
         gizmoLabelView.labelText = null
         gizmoLabelView.invalidate()
     }
@@ -1474,10 +1630,10 @@ class MainActivity : Activity() {
     /**
      * Arrastre en el viewport 3D: si estamos en Layout con Move, Rotate o Scale activos, aplica
      * esa transformacion al objeto seleccionado en vez de rotar la camara (que es el
-     * comportamiento por defecto del gesto, ver MyGLSurfaceView.onDragMove). Move y Rotate quedan
+     * comportamiento por defecto del gesto, ver MyGLSurfaceView.onDragMove). Los 3 quedan
      * restringidos a un eje si el arrastre empezo tocando el gizmo (ver onViewportDragStart /
-     * axisLocked); si no, caen al gesto libre de siempre. Scale sigue siendo siempre libre (su
-     * gizmo por eje queda para despues). Si no hay ningun objeto seleccionado, el arrastre no hace
+     * axisLocked); si no, caen al gesto libre de siempre (Scale libre = escala uniforme, ver
+     * MyGLRenderer.scaleSelectedObject). Si no hay ningun objeto seleccionado, el arrastre no hace
      * nada - a proposito no cae a rotar la camara, para que quede claro que estas en una de estas
      * herramientas sin nada para transformar. Devuelve true (arrastre consumido) siempre que una
      * de las tres este activa, se haya transformado algo o no.
@@ -1505,7 +1661,12 @@ class MainActivity : Activity() {
                 true
             }
             LayoutTool.SCALE -> {
-                glView.renderer.scaleSelectedObject(dy)
+                val axis = axisLocked
+                if (axis != null) {
+                    glView.renderer.scaleSelectedObjectOnAxis(dx, dy, axis)
+                } else {
+                    glView.renderer.scaleSelectedObject(dy)
+                }
                 true
             }
             else -> false
@@ -1645,6 +1806,8 @@ class MainActivity : Activity() {
         val zoomOutBtn = createIconButton(R.drawable.ic_zoom_out)
         handButton = createIconButton(R.drawable.ic_hand)
         lockButton = createIconButton(R.drawable.ic_lock_rotation)
+        val undoBtn = createIconButton(R.drawable.ic_undo)
+        val redoBtn = createIconButton(R.drawable.ic_redo)
 
         zoomInBtn.setOnClickListener { glView.renderer.zoomIn() }
         zoomOutBtn.setOnClickListener { glView.renderer.zoomOut() }
@@ -1659,8 +1822,29 @@ class MainActivity : Activity() {
             lockButton.background = circleBackground(glView.isLocked)
         }
 
+        // Undo/Redo: pila de snapshots completos de sceneObjects (ver MyGLRenderer.undo/redo) -
+        // limpia el eje/gizmo en curso (mismo criterio que onViewportDragEnd) porque el objeto
+        // que estaba siendo arrastrado puede haber cambiado o dejado de existir tras restaurar
+        // un snapshot. Mismo patron de Toast que Delete/Duplicate cuando no hay nada para hacer.
+        undoBtn.setOnClickListener {
+            if (glView.renderer.undo()) {
+                onViewportDragEnd()
+                glView.requestRender()
+            } else {
+                Toast.makeText(this, "Nada para deshacer", Toast.LENGTH_SHORT).show()
+            }
+        }
+        redoBtn.setOnClickListener {
+            if (glView.renderer.redo()) {
+                onViewportDragEnd()
+                glView.requestRender()
+            } else {
+                Toast.makeText(this, "Nada para rehacer", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         val spacing = (8 * density).toInt()
-        for (btn in listOf(zoomInBtn, zoomOutBtn, handButton, lockButton)) {
+        for (btn in listOf(zoomInBtn, zoomOutBtn, handButton, lockButton, undoBtn, redoBtn)) {
             (btn.layoutParams as LinearLayout.LayoutParams).topMargin = spacing
             column.addView(btn)
         }

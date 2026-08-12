@@ -8,9 +8,41 @@ import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
 import kotlin.math.sqrt
 
+/**
+ * Orientacion del gizmo de transformacion activo (Move/Rotate/Scale) - selector tipo Blender
+ * (ahi existen 6: Global/Local/Normal/Gimbal/View/Cursor; aca solo las 2 que tienen sentido con
+ * lo que la app soporta hoy, ver charla con el usuario). Afecta a los 3 gizmos por igual (antes
+ * Scale estaba SIEMPRE forzado a Local, sin opcion - ver comentario viejo en onDrawFrame,
+ * reemplazado por este selector).
+ *
+ * GLOBAL: los 3 ejes quedan siempre alineados al mundo, sin importar como este rotado el objeto -
+ * el gizmo se ve "prolijo" (Z siempre arriba), pero escalar por eje con el objeto rotado deforma
+ * en diagonal (shear) - la razon de fondo (y por que Blender tiene el mismo comportamiento, no es
+ * un bug de esta app) esta charlada con el usuario: con un solo float de escala por eje, un
+ * escalado no-uniforme en espacio mundo sobre un objeto rotado no es representable sin deformar.
+ * Esta app SI reproduce ese shear correctamente (ver SceneObject.shapeMatrix y
+ * MyGLRenderer.applyLocalDirScale) - lo que antes fallaba era que el resultado se escribia
+ * siempre en el eje LOCAL del objeto en vez de deformarlo, ya corregido.
+ *
+ * LOCAL: los 3 ejes rotan junto con el objeto - el gizmo se ve "girado" si el objeto esta rotado,
+ * pero mover/rotar/escalar por eje siempre da el resultado esperado, sin deformar. Es el
+ * comportamiento que ya tenia Scale a secas antes de este selector (ver fix documentado en
+ * rotatedAxisDirection) - ahora tambien disponible (y default) para Move y Rotate.
+ */
+enum class TransformOrientation { GLOBAL, LOCAL }
+
 class MyGLRenderer : GLSurfaceView.Renderer {
 
     private lateinit var cubeGeometry: Cube
+    private lateinit var planeGeometry: Plane
+    private lateinit var circleGeometry: Circle
+    private lateinit var uvSphereGeometry: UvSphere
+    private lateinit var icoSphereGeometry: IcoSphere
+    private lateinit var cylinderGeometry: Cylinder
+    private lateinit var coneGeometry: Cone
+    private lateinit var torusGeometry: Torus
+    private lateinit var gridMeshGeometry: GridMesh
+    private lateinit var monkeyGeometry: Monkey
     private lateinit var gridXY: Grid
     private lateinit var gridXZ: Grid
     private lateinit var gridYZ: Grid
@@ -22,6 +54,63 @@ class MyGLRenderer : GLSurfaceView.Renderer {
      */
     val sceneObjects = mutableListOf<SceneObject>()
     private var nextObjectId = 0
+    /**
+     * Pilas de Undo/Redo: cada entrada es una foto completa de sceneObjects (deep copy, ver
+     * snapshotSceneObjects) tomada ANTES de que la accion correspondiente modifique el estado real -
+     * mismo criterio que dejo planteado el companero (snapshot del estado completo, mas simple y
+     * confiable que deshacer cada operacion individualmente al reves). Limitada a MAX_UNDO_STEPS
+     * para no crecer sin limite en sesiones largas - al llegar al tope se descarta la mas vieja
+     * (FIFO), igual que el historial de Undo de Blender.
+     */
+    private val undoStack = ArrayDeque<List<SceneObject>>()
+    private val redoStack = ArrayDeque<List<SceneObject>>()
+    private val MAX_UNDO_STEPS = 50
+
+    /**
+     * Copia profunda de sceneObjects: SceneObject es un data class, pero rotationMatrix y
+     * shapeMatrix son FloatArray (tipo referencia) - copy() por si solo comparte el mismo array de
+     * fondo entre el original y la copia (mismo motivo por el que duplicateSelectedObject ya
+     * clonaba estos dos campos a mano con copyOf()). Sin esto, restaurar un snapshot viejo
+     * mutaria en vivo tambien el estado "actual" que se guardo antes, arruinando el historial.
+     */
+    private fun snapshotSceneObjects(): List<SceneObject> =
+        sceneObjects.map { it.copy(rotationMatrix = it.rotationMatrix.copyOf(), shapeMatrix = it.shapeMatrix.copyOf()) }
+
+    /**
+     * Guarda el estado actual de la escena en la pila de Undo - se llama SIEMPRE antes de que una
+     * accion modifique sceneObjects (Add/Delete/Duplicate: ver cada funcion; Move/Rotate/Scale: ver
+     * MainActivity.onViewportDragStart, una vez por gesto de arrastre, no por frame). Cualquier
+     * accion nueva despues de esto invalida el Redo pendiente (mismo comportamiento que Blender/
+     * cualquier editor: no tiene sentido "rehacer" algo que ya quedo pisado por una accion distinta).
+     */
+    fun pushUndoSnapshot() {
+        undoStack.addLast(snapshotSceneObjects())
+        if (undoStack.size > MAX_UNDO_STEPS) undoStack.removeFirst()
+        redoStack.clear()
+    }
+
+    /**
+     * Deshace la ultima accion: guarda el estado actual en Redo (para poder rehacer despues) y
+     * restaura el snapshot mas reciente de Undo. Devuelve false (sin hacer nada) si no hay nada
+     * para deshacer - el llamador (MainActivity) usa esto para avisar con un Toast, mismo criterio
+     * que deleteSelectedObject/duplicateSelectedObject.
+     */
+    fun undo(): Boolean {
+        val previous = undoStack.removeLastOrNull() ?: return false
+        redoStack.addLast(snapshotSceneObjects())
+        sceneObjects.clear()
+        sceneObjects.addAll(previous)
+        return true
+    }
+
+    /** Igual que undo() pero al reves: mueve el snapshot actual a Undo y restaura el tope de Redo. */
+    fun redo(): Boolean {
+        val next = redoStack.removeLastOrNull() ?: return false
+        undoStack.addLast(snapshotSceneObjects())
+        sceneObjects.clear()
+        sceneObjects.addAll(next)
+        return true
+    }
 
     private val mvpMatrix = FloatArray(16)
     private val projectionMatrix = FloatArray(16)
@@ -46,8 +135,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     /**
      * Que gizmo de transformacion por eje se dibuja sobre el objeto seleccionado - null si ninguno.
      * MainActivity lo setea segun la herramienta activa (ver setLayoutTool): Move -> GizmoMode.MOVE,
-     * Rotate -> GizmoMode.ROTATE. Scale todavia no tiene su version restringida a eje (ver charla
-     * con el usuario).
+     * Rotate -> GizmoMode.ROTATE, Scale -> GizmoMode.SCALE.
      */
     @Volatile var gizmoMode: GizmoMode? = null
 
@@ -68,6 +156,24 @@ class MyGLRenderer : GLSurfaceView.Renderer {
      * visual con gizmoMode == GizmoMode.MOVE - ver onDrawFrame y Gizmo3D.draw.
      */
     @Volatile var activeMoveAxis: Char? = null
+
+    /**
+     * Eje (X/Y/Z) del cubito de Scale que se esta arrastrando ahora mismo - null si no hay
+     * arrastre en curso o si el arrastre es libre (no empezo tocando un cubito, ver
+     * hitTestGizmoScaleAxis). Mismo criterio que activeMoveAxis/activeRotateAxis pero para
+     * GizmoMode.SCALE: MainActivity lo sincroniza en onViewportDragStart/onViewportDragEnd. Solo
+     * tiene efecto visual con gizmoMode == GizmoMode.SCALE - ver onDrawFrame y Gizmo3D.draw.
+     */
+    @Volatile var activeScaleAxis: Char? = null
+
+    /**
+     * Orientacion actual del gizmo activo (Move/Rotate/Scale) - ver enum TransformOrientation.
+     * MainActivity la togglea desde el boton nuevo (ver toggleTransformOrientation) y la usa para
+     * decidir el texto/resaltado de ese boton. Default LOCAL: es el comportamiento sin sorpresas
+     * (mismo que ya tenia Scale antes de este selector) - el usuario puede pasar a GLOBAL cuando
+     * quiera el gizmo siempre alineado al mundo, sabiendo el trade-off (ver comentario del enum).
+     */
+    @Volatile var transformOrientation: TransformOrientation = TransformOrientation.LOCAL
 
     /**
      * Direccion (mundo, normalizada) desde el centro del objeto hacia el punto donde el dedo tocO
@@ -97,8 +203,8 @@ class MyGLRenderer : GLSurfaceView.Renderer {
      * Tamano del gizmo en unidades de mundo, recalculado por distancia de camara para que se vea
      * de tamano constante en pantalla sin importar el zoom (mismo criterio que orthoSize en
      * onDrawFrame). Unica fuente de verdad para el dibujo (onDrawFrame) y los hit-test
-     * (hitTestGizmoAxis, hitTestGizmoRotateAxis) - si diverge, el gizmo se ve en un lugar y se toca
-     * en otro.
+     * (hitTestGizmoAxis, hitTestGizmoRotateAxis, hitTestGizmoScaleAxis) - si diverge, el gizmo se
+     * ve en un lugar y se toca en otro.
      */
     private val gizmoScreenScale: Float
         get() = cameraDistance * 0.15f
@@ -111,8 +217,157 @@ class MyGLRenderer : GLSurfaceView.Renderer {
      * Blender agregaria en un 3D cursor que nunca se movio de (0,0,0).
      */
     fun addCube(): SceneObject {
+        pushUndoSnapshot()
         for (obj in sceneObjects) obj.selected = false
         val newObject = SceneObject(id = nextObjectId++, selected = true)
+        sceneObjects.add(newObject)
+        return newObject
+    }
+
+    fun addPlane(): SceneObject {
+        pushUndoSnapshot()
+        for (obj in sceneObjects) obj.selected = false
+        val newObject = SceneObject(id = nextObjectId++, type = MeshType.PLANE, selected = true)
+        sceneObjects.add(newObject)
+        return newObject
+    }
+
+    /** Igual que addPlane, pero para Circle (ver Circle.kt / MeshType.CIRCLE). */
+    fun addCircle(): SceneObject {
+        pushUndoSnapshot()
+        for (obj in sceneObjects) obj.selected = false
+        val newObject = SceneObject(id = nextObjectId++, type = MeshType.CIRCLE, selected = true)
+        sceneObjects.add(newObject)
+        return newObject
+    }
+
+    /** Igual que addCircle, pero para UV Sphere (ver UvSphere.kt / MeshType.UV_SPHERE). */
+    fun addUvSphere(): SceneObject {
+        pushUndoSnapshot()
+        for (obj in sceneObjects) obj.selected = false
+        val newObject = SceneObject(id = nextObjectId++, type = MeshType.UV_SPHERE, selected = true)
+        sceneObjects.add(newObject)
+        return newObject
+    }
+
+    /** Igual que addUvSphere, pero para Ico Sphere (ver IcoSphere.kt / MeshType.ICO_SPHERE). */
+    fun addIcoSphere(): SceneObject {
+        pushUndoSnapshot()
+        for (obj in sceneObjects) obj.selected = false
+        val newObject = SceneObject(id = nextObjectId++, type = MeshType.ICO_SPHERE, selected = true)
+        sceneObjects.add(newObject)
+        return newObject
+    }
+
+    /** Igual que addIcoSphere, pero para Cylinder (ver Cylinder.kt / MeshType.CYLINDER). */
+    fun addCylinder(): SceneObject {
+        pushUndoSnapshot()
+        for (obj in sceneObjects) obj.selected = false
+        val newObject = SceneObject(id = nextObjectId++, type = MeshType.CYLINDER, selected = true)
+        sceneObjects.add(newObject)
+        return newObject
+    }
+
+    /** Igual que addCylinder, pero para Cone (ver Cone.kt / MeshType.CONE). */
+    fun addCone(): SceneObject {
+        pushUndoSnapshot()
+        for (obj in sceneObjects) obj.selected = false
+        val newObject = SceneObject(id = nextObjectId++, type = MeshType.CONE, selected = true)
+        sceneObjects.add(newObject)
+        return newObject
+    }
+
+    /** Igual que addCone, pero para Torus (ver Torus.kt / MeshType.TORUS). */
+    fun addTorus(): SceneObject {
+        pushUndoSnapshot()
+        for (obj in sceneObjects) obj.selected = false
+        val newObject = SceneObject(id = nextObjectId++, type = MeshType.TORUS, selected = true)
+        sceneObjects.add(newObject)
+        return newObject
+    }
+
+    /** Igual que addTorus, pero para Grid (ver GridMesh.kt / MeshType.GRID). */
+    fun addGrid(): SceneObject {
+        pushUndoSnapshot()
+        for (obj in sceneObjects) obj.selected = false
+        val newObject = SceneObject(id = nextObjectId++, type = MeshType.GRID, selected = true)
+        sceneObjects.add(newObject)
+        return newObject
+    }
+
+    /**
+     * Object > Clear (Layout): resetea posicion, rotacion y escala del objeto seleccionado a su
+     * estado original - vuelve al origen (0,0,0), sin rotar, sin escalar/deformar. En Blender
+     * "Clear" es un submenu con Location/Rotation/Scale/Origin/All Transforms por separado; como
+     * el menu Object de esta app quedo definido como lista plana sin submenus (decision ya
+     * charlada con el usuario), esta funcion implementa el equivalente a "All Transforms" (el
+     * unico de esos que tiene sentido como accion unica sin pedir mas contexto). Pasa por Undo
+     * como el resto de las acciones que modifican la escena (Delete/Duplicate/Add).
+     * Devuelve false (y no hace nada) si no hay ningun objeto seleccionado.
+     */
+    fun clearSelectedObjectTransform(): Boolean {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return false
+        pushUndoSnapshot()
+        selected.posX = 0f
+        selected.posY = 0f
+        selected.posZ = 0f
+        Matrix.setIdentityM(selected.rotationMatrix, 0)
+        Matrix.setIdentityM(selected.shapeMatrix, 0)
+        return true
+    }
+
+    /**
+     * Borra el objeto seleccionado (Object > Delete). Si no hay ninguno seleccionado, no hace
+     * nada y devuelve false - el llamador (MainActivity.onObjectMenuAction) usa esto para avisar
+     * si hizo falta. No hay confirmacion (a diferencia de Blender, que tampoco pide confirmacion
+     * para Delete via el menu Object).
+     */
+    fun deleteSelectedObject(): Boolean {
+        val index = sceneObjects.indexOfFirst { it.selected }
+        if (index == -1) return false
+        pushUndoSnapshot()
+        sceneObjects.removeAt(index)
+        return true
+    }
+
+    /**
+     * Cuanto se corre en X el duplicado respecto del original (ver duplicateSelectedObject) -
+     * unidades de mundo, mismo orden de magnitud que el tamano tipico de un objeto (0.5 de medio
+     * lado en las primitivas base) para que se note claramente que hay dos objetos separados.
+     */
+    private val DUPLICATE_OFFSET_X = 0.6f
+
+    /**
+     * Duplica el objeto seleccionado (Object > Duplicate Objects): mismo tipo, misma rotacion y
+     * forma (rotationMatrix/shapeMatrix CLONADAS con copyOf - si se copiara solo la referencia del
+     * FloatArray, mover o escalar una copia moveria/escalaria la otra tambien, ya que
+     * compartirian el mismo array por debajo). El duplicado nace con un offset chico en X para que
+     * se vea que hay dos objetos separados (Blender en cambio deja el duplicado exactamente
+     * encima y lo manda directo a modo Grab con el mouse - no tenemos ese gesto encadenado todavia,
+     * asi que el offset fijo es la forma mas simple de que el resultado sea utilizable de una).
+     * Deja el original deseleccionado y el duplicado seleccionado (igual que Blender). Devuelve
+     * null (y no hace nada) si no hay ningun objeto seleccionado.
+     */
+    fun duplicateSelectedObject(): SceneObject? {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return null
+        pushUndoSnapshot()
+        for (obj in sceneObjects) obj.selected = false
+        val duplicate = selected.copy(
+            id = nextObjectId++,
+            posX = selected.posX + DUPLICATE_OFFSET_X,
+            rotationMatrix = selected.rotationMatrix.copyOf(),
+            shapeMatrix = selected.shapeMatrix.copyOf(),
+            selected = true
+        )
+        sceneObjects.add(duplicate)
+        return duplicate
+    }
+
+    /** Igual que addGrid, pero para Monkey (ver Monkey.kt / MeshType.MONKEY). */
+    fun addMonkey(): SceneObject {
+        pushUndoSnapshot()
+        for (obj in sceneObjects) obj.selected = false
+        val newObject = SceneObject(id = nextObjectId++, type = MeshType.MONKEY, selected = true)
         sceneObjects.add(newObject)
         return newObject
     }
@@ -193,7 +448,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         val selected = sceneObjects.firstOrNull { it.selected } ?: return false
         val worldDelta = computeWorldDragDelta(dxScreen, dyScreen)
 
-        val axisDir = axisDirection(axis)
+        val axisDir = effectiveAxisDirection(axis, selected)
         val projected = worldDelta[0] * axisDir[0] + worldDelta[1] * axisDir[1] + worldDelta[2] * axisDir[2]
 
         selected.posX += axisDir[0] * projected
@@ -209,13 +464,41 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     }
 
     /**
+     * Igual que axisDirection, pero rotada por la orientacion actual del objeto - se usa cuando
+     * transformOrientation es LOCAL (ver effectiveAxisDirection) para que Move/Rotate/Scale por
+     * eje sigan la orientacion propia del objeto en vez del mundo puro.
+     */
+    private fun rotatedAxisDirection(axis: Char, obj: SceneObject): FloatArray {
+        val local = axisDirection(axis)
+        val worldDir = FloatArray(4)
+        Matrix.multiplyMV(worldDir, 0, obj.rotationMatrix, 0, floatArrayOf(local[0], local[1], local[2], 0f), 0)
+        return floatArrayOf(worldDir[0], worldDir[1], worldDir[2])
+    }
+
+    /**
+     * Unica fuente de verdad para "que direccion usa el eje X/Y/Z ahora mismo": world pura
+     * (axisDirection) si transformOrientation es GLOBAL, rotada con el objeto (rotatedAxisDirection)
+     * si es LOCAL. Reemplaza los usos sueltos de axisDirection/rotatedAxisDirection en hit-test,
+     * dibujo y logica de arrastre de los 3 gizmos (Move/Rotate/Scale) - antes Move/Rotate estaban
+     * hardcodeados a world y Scale a rotada; ahora los 3 respetan el mismo selector (ver enum
+     * TransformOrientation). Si los usos no coincidieran en la misma direccion, el gizmo se veria
+     * en un lugar, se tocaria en otro, o el arrastre se sentiria invertido - mismo criterio de
+     * "unica fuente de verdad" que ya se aplica en gizmoScreenScale.
+     */
+    private fun effectiveAxisDirection(axis: Char, obj: SceneObject): FloatArray {
+        return if (transformOrientation == TransformOrientation.LOCAL) rotatedAxisDirection(axis, obj) else axisDirection(axis)
+    }
+
+    /**
      * Rota el objeto seleccionado libre (sin eje restringido), con la misma convencion que la
      * orbita de camara: dx horizontal gira alrededor del eje Z del mundo, dy vertical gira
      * alrededor del eje X del mundo. Ambos deltas se aplican sobre la matriz de rotacion
      * acumulada del objeto (ver applyWorldRotationDelta) en vez de sumarse a angulos sueltos -
      * asi cada rotacion nueva se compone sobre el estado real actual, sin el bug de orden fijo que
      * tenia el esquema anterior de Euler (rotX/rotY/rotZ, ver charla con el usuario). Para rotacion
-     * restringida a un solo eje (gizmo de anillos) ver rotateSelectedObjectOnAxis.
+     * restringida a un solo eje (gizmo de anillos) ver rotateSelectedObjectOnAxis. Este gesto libre
+     * es deliberadamente siempre mundo (no depende del selector de orientacion) - mismo criterio
+     * que la orbita de camara, a la que imita.
      * Devuelve false (y no hace nada) si no hay ningun objeto seleccionado.
      */
     fun rotateSelectedObject(dxScreen: Float, dyScreen: Float): Boolean {
@@ -227,21 +510,32 @@ class MyGLRenderer : GLSurfaceView.Renderer {
 
     /**
      * Aplica una rotacion incremental (angleDeg grados alrededor del eje MUNDO dado) sobre la
-     * matriz de rotacion acumulada del objeto (ver SceneObject.rotationMatrix), pre-multiplicando
-     * la matriz delta sobre la actual (delta * actual, no actual * delta). Ese orden es lo que
-     * garantiza que el eje sea siempre el eje MUNDO real (X/Y/Z absolutos), sin importar como este
-     * orientado el objeto en este momento - mismo criterio "Global" que ya usa el gizmo de rotacion
-     * (ver comentario de gizmoMode en onDrawFrame). Reemplaza el viejo esquema de 3 angulos de
-     * Euler sueltos recombinados cada frame en un orden fijo (Rz*Rx*Ry) - ese orden fijo era el bug
-     * reportado y confirmado con el usuario: rotar en un eje "pisaba" visualmente lo ya rotado en
-     * otro, porque el resultado final dependia del orden de composicion y no del orden real en que
-     * se toco cada eje. Se llama una vez por eje tocado, tanto desde el gesto libre
-     * (rotateSelectedObject, dos ejes por frame) como desde el gizmo de anillos
-     * (rotateSelectedObjectOnAxis, un eje por frame).
+     * matriz de rotacion acumulada del objeto - atajo de applyRotationDeltaAroundDir para cuando
+     * el eje ya se conoce como char de mundo (rotateSelectedObject, gesto libre). Ver
+     * applyRotationDeltaAroundDir para la logica real (pre-multiplicacion delta * actual, que
+     * evita el bug de orden fijo de Euler ya resuelto - ver charla con el usuario).
      */
     private fun applyWorldRotationDelta(obj: SceneObject, angleDeg: Float, axis: Char) {
+        applyRotationDeltaAroundDir(obj, angleDeg, axisDirection(axis))
+    }
+
+    /**
+     * Aplica una rotacion incremental (angleDeg grados alrededor de la direccion dir dada, ya
+     * resuelta) sobre la matriz de rotacion acumulada del objeto (ver SceneObject.rotationMatrix),
+     * pre-multiplicando la matriz delta sobre la actual (delta * actual, no actual * delta). Ese
+     * orden es lo que garantiza que la rotacion se acumule sobre el estado real actual del objeto,
+     * sin el bug de orden fijo que tenia el esquema anterior de Euler (rotX/rotY/rotZ, ver charla
+     * con el usuario): rotar en un eje "pisaba" visualmente lo ya rotado en otro, porque el
+     * resultado final dependia del orden de composicion y no del orden real en que se toco cada eje.
+     *
+     * Recibe la direccion ya resuelta (no un char) para poder rotar alrededor del eje LOCAL cuando
+     * transformOrientation es LOCAL (ver effectiveAxisDirection, usada por rotateSelectedObjectOnAxis)
+     * o del eje MUNDO cuando es GLOBAL o para el gesto libre (ver applyWorldRotationDelta, que
+     * siempre pasa axisDirection sin importar el selector - la rotacion libre imita la orbita de
+     * camara y no depende de la orientacion elegida).
+     */
+    private fun applyRotationDeltaAroundDir(obj: SceneObject, angleDeg: Float, dir: FloatArray) {
         if (angleDeg == 0f) return
-        val dir = axisDirection(axis)
         val delta = FloatArray(16)
         Matrix.setIdentityM(delta, 0)
         Matrix.rotateM(delta, 0, angleDeg, dir[0], dir[1], dir[2])
@@ -258,8 +552,11 @@ class MyGLRenderer : GLSurfaceView.Renderer {
      * tangente en pantalla del circulo de rotacion de ese eje, evaluada en la direccion radial
      * actual del dedo (ver computeScreenTangentForRadialDir) en vez de una direccion fija -
      * mismo resultado visual para X/Z que el gesto libre, pero generalizado para que Y (que no
-     * tiene una convencion fija de antes) tambien funcione, sin tener que casear por eje. El delta
-     * resultante se aplica con applyWorldRotationDelta, igual que el gesto libre.
+     * tiene una convencion fija de antes) tambien funcione, sin tener que casear por eje.
+     *
+     * axisDir se resuelve UNA vez via effectiveAxisDirection y se reusa tanto para la tangente
+     * como para aplicar la rotacion (applyRotationDeltaAroundDir) - asi el anillo que ves (mundo o
+     * local, segun transformOrientation) es exactamente el eje alrededor del cual se rota.
      * Devuelve true si el arrastre fue consumido (haya rotado algo o no - p.ej. si el eje quedo de
      * canto respecto de la camara, caso degenerado sin tangente definida).
      */
@@ -267,11 +564,12 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         val selected = sceneObjects.firstOrNull { it.selected } ?: return true
         val center = floatArrayOf(selected.posX, selected.posY, selected.posZ)
         val radialDir = activeRotateCurrentDir ?: activeRotateStartDir ?: return true
-        val screenTangent = computeScreenTangentForRadialDir(center, axisDirection(axis), radialDir) ?: return true
+        val axisDir = effectiveAxisDirection(axis, selected)
+        val screenTangent = computeScreenTangentForRadialDir(center, axisDir, radialDir) ?: return true
 
         // Misma sensibilidad que el rotate libre (dx/dy * 0.5).
         val delta = (dxScreen * screenTangent[0] + dyScreen * screenTangent[1]) * 0.5f
-        applyWorldRotationDelta(selected, delta, axis)
+        applyRotationDeltaAroundDir(selected, delta, axisDir)
         return true
     }
 
@@ -354,16 +652,219 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     }
 
     /**
-     * Escala el objeto seleccionado libre (sin eje restringido): arrastre vertical (dyScreen)
-     * cambia la escala uniforme - arriba (dy negativo) agranda, abajo achica. Clampeada entre
-     * 0.1 y 10 para que no desaparezca ni crezca sin limite.
+     * Escala el objeto seleccionado libre (sin eje restringido, ver GizmoMode.SCALE con
+     * activeScaleAxis == null - se usa tanto desde el trackball blanco como desde el gesto de
+     * Layout sin gizmo): arrastre vertical (dyScreen) cambia la escala uniforme - arriba (dy
+     * negativo) agranda, abajo achica. Al ser uniforme, multiplica TODA la matriz de forma del
+     * objeto (shapeMatrix) por el mismo factor - mantiene la proporcion (y cualquier shear que ya
+     * tuviera) del objeto.
+     *
+     * El factor se clampea UNA sola vez, antes de aplicarlo (ver clampUniformScaleFactor), en vez
+     * de clampear cada eje por separado despues de multiplicar (bug arreglado: si el objeto ya
+     * habia quedado no-uniforme por un escalado previo con el gizmo de un solo eje, y un eje
+     * estaba mas cerca del limite que los otros, clampear cada eje por separado hacia que ESE eje
+     * se "congelara" en el limite mientras los otros seguian cambiando - rompiendo la uniformidad
+     * que se supone que este gesto preserva). Clampeando el factor comun antes, o los 3 ejes
+     * cambian igual (mientras haya margen) o ninguno cambia (si alguno ya esta en el limite) -
+     * nunca una mezcla de las dos cosas.
      * Devuelve false (y no hace nada) si no hay ningun objeto seleccionado.
      */
     fun scaleSelectedObject(dyScreen: Float): Boolean {
         val selected = sceneObjects.firstOrNull { it.selected } ?: return false
-        val scaleFactor = 1f - dyScreen * 0.005f
-        selected.scale = (selected.scale * scaleFactor).coerceIn(0.1f, 10f)
+        val rawFactor = 1f - dyScreen * 0.005f
+        val scaleFactor = clampUniformScaleFactor(rawFactor, selected)
+        scaleMatrixLinearPart(selected.shapeMatrix, scaleFactor)
         return true
+    }
+
+    /**
+     * Multiplica la parte lineal (3x3) de una matriz 4x4 por un escalar comun - deja la fila/
+     * columna homogenea sin tocar (shapeMatrix nunca lleva traslacion propia, ver SceneObject).
+     * Escalado uniforme: multiplicar TODA la matriz por igual conmuta con cualquier shear que ya
+     * hubiera (a diferencia del escalado por eje, que si depende de la direccion - ver
+     * applyLocalDirScale), asi que no hace falta descomponer nada.
+     */
+    private fun scaleMatrixLinearPart(mat: FloatArray, factor: Float) {
+        for (col in 0 until 3) {
+            for (row in 0 until 3) {
+                mat[col * 4 + row] *= factor
+            }
+        }
+    }
+
+    /**
+     * Recorta rawFactor (el multiplicador que se aplicaria por igual a toda la matriz de forma)
+     * para que, aplicado, ningun eje termine fuera de [0.1, 10] - sin importar que tan desparejos
+     * esten los 3 ejes entre si ya de antes (columnLength generaliza lo que antes eran
+     * scaleX/Y/Z sueltos). Agrandando (rawFactor > 1): el eje mas grande es el que primero
+     * llegaria a 10, asi que el factor maximo permitido es el minimo de 10/largoEje entre los 3.
+     * Achicando (rawFactor < 1): el eje mas chico es el que primero llegaria a 0.1, asi que el
+     * factor minimo permitido es el maximo de 0.1/largoEje entre los 3.
+     * Ver scaleSelectedObject para por que esto reemplaza el clamp por eje de antes.
+     */
+    private fun clampUniformScaleFactor(rawFactor: Float, obj: SceneObject): Float {
+        val lx = columnLength(obj.shapeMatrix, 0)
+        val ly = columnLength(obj.shapeMatrix, 1)
+        val lz = columnLength(obj.shapeMatrix, 2)
+        return when {
+            rawFactor > 1f -> minOf(rawFactor, 10f / lx, 10f / ly, 10f / lz)
+            rawFactor < 1f -> maxOf(rawFactor, 0.1f / lx, 0.1f / ly, 0.1f / lz)
+            else -> rawFactor
+        }
+    }
+
+    /**
+     * Largo de una columna (0=X, 1=Y, 2=Z) de una matriz 4x4 - generaliza scaleX/scaleY/scaleZ
+     * (que antes eran exactamente este valor, al ser shapeMatrix diagonal pura): cada columna es
+     * donde termina el eje local correspondiente despues de aplicar la matriz, asi que su largo es
+     * "cuanto se estira" el objeto en esa direccion. Compartido por los clamps de escala y por
+     * intersectAABB (bounding box aproximado para seleccion).
+     */
+    private fun columnLength(mat: FloatArray, col: Int): Float {
+        val x = mat[col * 4 + 0]
+        val y = mat[col * 4 + 1]
+        val z = mat[col * 4 + 2]
+        return sqrt(x * x + y * y + z * z)
+    }
+
+    /**
+     * Igual que scaleSelectedObject, pero aplica el factor SOLO a lo largo de la direccion del eje
+     * dado - se usa cuando el arrastre empezo tocando el cubito de un eje del gizmo de Scale (ver
+     * MainActivity.onViewportDragStart, que llama a hitTestGizmoScaleAxis en ACTION_DOWN).
+     * Se proyecta el arrastre completo (dx, dy) sobre la direccion en pantalla del eje (ver
+     * projectDragOntoAxisScreenDir) - mismo criterio que moveSelectedObjectOnAxis (proyeccion en
+     * espacio mundo) y rotateSelectedObjectOnAxis (proyeccion sobre la tangente en pantalla):
+     * "arrastrar en la direccion en que apunta el cubito" agranda, en la direccion contraria
+     * achica, sin importar si el eje se ve horizontal, vertical o en diagonal en pantalla para el
+     * angulo de camara actual.
+     *
+     * La direccion de escalado (effectiveAxisDirection: eje mundo puro en Global, eje rotado en
+     * Local) se convierte a espacio local del objeto (worldDirToLocalDir) antes de aplicarse sobre
+     * shapeMatrix (ver applyLocalDirScale) - shapeMatrix es una matriz completa, no 3 floats
+     * sueltos, asi que SI puede representar el resultado real: en Local (o con el objeto sin
+     * rotar) da lo mismo que antes (escala pura por eje, verificado a mano); en Global con el
+     * objeto rotado, el eje mundo no coincide con ningun eje propio del objeto y el resultado es
+     * un shear real - mismo comportamiento que Blender (ver charla con el usuario y su video de
+     * referencia, donde se confirmo el bug: antes esto se escribia siempre en el eje LOCAL,
+     * como si el objeto no estuviera rotado).
+     * Devuelve false (y no hace nada) si no hay ningun objeto seleccionado.
+     */
+    fun scaleSelectedObjectOnAxis(dxScreen: Float, dyScreen: Float, axis: Char): Boolean {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return false
+        val dragAmount = projectDragOntoAxisScreenDir(dxScreen, dyScreen, axis, selected)
+        val rawFactor = 1f + dragAmount * 0.005f
+        val localDir = worldDirToLocalDir(effectiveAxisDirection(axis, selected), selected)
+        val factor = clampAxisScaleFactor(rawFactor, localDir, selected)
+        applyLocalDirScale(selected, localDir, factor)
+        return true
+    }
+
+    /**
+     * Convierte una direccion de MUNDO a espacio LOCAL del objeto, deshaciendo su rotationMatrix
+     * (rotacion pura - la inversa es la transpuesta). Usada por scaleSelectedObjectOnAxis: la
+     * direccion por la que se escala (effectiveAxisDirection, ya sea eje mundo puro en Global o
+     * eje rotado en Local) tiene que pasarse a espacio local antes de aplicarla sobre shapeMatrix,
+     * que vive ANTES de rotationMatrix en la composicion (ver SceneObject).
+     */
+    private fun worldDirToLocalDir(worldDir: FloatArray, obj: SceneObject): FloatArray {
+        val inverseRotation = FloatArray(16)
+        Matrix.transposeM(inverseRotation, 0, obj.rotationMatrix, 0)
+        val result = FloatArray(4)
+        Matrix.multiplyMV(result, 0, inverseRotation, 0, floatArrayOf(worldDir[0], worldDir[1], worldDir[2], 0f), 0)
+        return floatArrayOf(result[0], result[1], result[2])
+    }
+
+    /**
+     * Cuanto esta estirado el objeto ahora mismo en una direccion LOCAL dada (unitaria): aplica
+     * shapeMatrix a esa direccion y mide el largo del resultado - generaliza columnLength (que es
+     * el caso particular de una direccion que coincide exactamente con un eje local) a cualquier
+     * direccion, incluida una diagonal entre varios ejes locales (caso Global con el objeto
+     * rotado). Usada por clampAxisScaleFactor para poner los mismos limites [0.1, 10] que ya
+     * existian, ahora tambien cuando la direccion de escalado no es un eje local puro.
+     */
+    private fun directionalScaleMagnitude(shape: FloatArray, localDir: FloatArray): Float {
+        var vx = 0f
+        var vy = 0f
+        var vz = 0f
+        for (col in 0 until 3) {
+            vx += shape[col * 4 + 0] * localDir[col]
+            vy += shape[col * 4 + 1] * localDir[col]
+            vz += shape[col * 4 + 2] * localDir[col]
+        }
+        return sqrt(vx * vx + vy * vy + vz * vz)
+    }
+
+    /** Mismo criterio de clamp [0.1, 10] que clampUniformScaleFactor, pero medido a lo largo de una direccion local especifica (ver directionalScaleMagnitude) en vez de por columna pura - equivalente exacto cuando localDir es un eje puro. */
+    private fun clampAxisScaleFactor(rawFactor: Float, localDir: FloatArray, obj: SceneObject): Float {
+        val currentMag = directionalScaleMagnitude(obj.shapeMatrix, localDir)
+        if (currentMag < 1e-6f) return rawFactor
+        return when {
+            rawFactor > 1f -> minOf(rawFactor, 10f / currentMag)
+            rawFactor < 1f -> maxOf(rawFactor, 0.1f / currentMag)
+            else -> rawFactor
+        }
+    }
+
+    /**
+     * Aplica un escalado con factor `factor` a lo largo de una direccion LOCAL unitaria dada
+     * (localDir, ya convertida via worldDirToLocalDir), modificando shapeMatrix del objeto -
+     * formula estandar de escalado direccional: S' = S + (factor - 1) * localDir * (localDir^T * S).
+     *
+     * Si localDir coincide con un eje local puro (Local, o Global con el objeto sin rotar), esto
+     * da EXACTAMENTE lo mismo que escalar ese eje a secas (equivalente matematico al viejo
+     * `selected.scaleX *= factor`, verificado a mano) - cero cambio de comportamiento ahi.
+     *
+     * Si localDir queda repartida entre varios ejes locales (Global con el objeto rotado, ver
+     * worldDirToLocalDir), la formula mete terminos fuera de la diagonal en shapeMatrix (shear) -
+     * es lo que reproduce el comportamiento real de Blender al escalar en Global un objeto rotado
+     * (ver charla con el usuario, video de referencia): el objeto se deforma en diagonal en vez de
+     * estirarse derecho, porque el eje mundo que se esta arrastrando no coincide con ningun eje
+     * propio del objeto.
+     */
+    private fun applyLocalDirScale(obj: SceneObject, localDir: FloatArray, factor: Float) {
+        val shape = obj.shapeMatrix
+        // rowProjected[col] = localDir . (columna `col` de shape) = localDir^T * S, fila 1x3.
+        val rowProjected = FloatArray(3)
+        for (col in 0 until 3) {
+            rowProjected[col] = localDir[0] * shape[col * 4 + 0] + localDir[1] * shape[col * 4 + 1] + localDir[2] * shape[col * 4 + 2]
+        }
+        val delta = factor - 1f
+        for (col in 0 until 3) {
+            for (row in 0 until 3) {
+                shape[col * 4 + row] += delta * localDir[row] * rowProjected[col]
+            }
+        }
+    }
+
+    /**
+     * Proyecta el arrastre completo (dx, dy) sobre la direccion en pantalla en que apunta un eje
+     * dado, para el objeto dado - se calcula proyectando el centro del objeto y un punto un poco
+     * mas alla en la direccion del eje a pantalla (ver projectWorldToScreen), y comparando
+     * esos dos puntos. Fallback a -dyScreen (comportamiento viejo) si la proyeccion no esta
+     * disponible todavia (primer frame) o el eje quedo de canto respecto de la camara (proyectado
+     * a un solo punto en pantalla, sin direccion definida).
+     *
+     * Usa effectiveAxisDirection (no axisDirection ni rotatedAxisDirection sueltos) - la direccion
+     * en pantalla usada para medir el arrastre tiene que ser la misma que se ve dibujada (ver
+     * onDrawFrame), o el arrastre se sentiria invertido o en un angulo que no corresponde al
+     * cubito que se ve en pantalla (bug original reportado y confirmado con el usuario, corregido).
+     */
+    private fun projectDragOntoAxisScreenDir(dxScreen: Float, dyScreen: Float, axis: Char, obj: SceneObject): Float {
+        val axisDir = effectiveAxisDirection(axis, obj)
+        val p0 = projectWorldToScreen(obj.posX, obj.posY, obj.posZ)
+        val p1 = projectWorldToScreen(
+            obj.posX + axisDir[0] * 0.05f,
+            obj.posY + axisDir[1] * 0.05f,
+            obj.posZ + axisDir[2] * 0.05f
+        )
+        if (p0 == null || p1 == null) return -dyScreen
+
+        val screenDx = p1[0] - p0[0]
+        val screenDy = p1[1] - p0[1]
+        val screenLen = sqrt(screenDx * screenDx + screenDy * screenDy)
+        if (screenLen < 1e-4f) return -dyScreen
+
+        return (dxScreen * (screenDx / screenLen)) + (dyScreen * (screenDy / screenLen))
     }
 
     fun zoomIn() {
@@ -378,6 +879,15 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         GLES20.glClearColor(0.11f, 0.11f, 0.11f, 1f)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         cubeGeometry = Cube()
+        planeGeometry = Plane()
+        circleGeometry = Circle()
+        uvSphereGeometry = UvSphere()
+        icoSphereGeometry = IcoSphere()
+        cylinderGeometry = Cylinder()
+        coneGeometry = Cone()
+        torusGeometry = Torus()
+        gridMeshGeometry = GridMesh()
+        monkeyGeometry = Monkey()
         gridXY = Grid(GridPlane.XY)
         gridXZ = Grid(GridPlane.XZ)
         gridYZ = Grid(GridPlane.YZ)
@@ -430,27 +940,41 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         grid.draw(mvpMatrix)
 
         // Cada objeto se dibuja con su propia matriz (mvpMatrix comun de camara + transform propia:
-        // traslacion, rotacion acumulada (obj.rotationMatrix, ver SceneObject) y escala uniforme -
-        // en ese orden, escala primero para que quede local al objeto antes de rotar/trasladar).
+        // traslacion, rotacion acumulada (obj.rotationMatrix, ver SceneObject) y forma (obj.shapeMatrix,
+        // escala y, cuando corresponde, shear) - en ese orden, la forma primero para que quede local
+        // al objeto antes de rotar/trasladar.
         val translateMatrix = FloatArray(16)
         val modelMatrix = FloatArray(16)
+        val shapedModelMatrix = FloatArray(16)
         val objMvpMatrix = FloatArray(16)
         for (obj in sceneObjects) {
             Matrix.setIdentityM(translateMatrix, 0)
             Matrix.translateM(translateMatrix, 0, obj.posX, obj.posY, obj.posZ)
             Matrix.multiplyMM(modelMatrix, 0, translateMatrix, 0, obj.rotationMatrix, 0)
-            Matrix.scaleM(modelMatrix, 0, obj.scale, obj.scale, obj.scale)
-            Matrix.multiplyMM(objMvpMatrix, 0, mvpMatrix, 0, modelMatrix, 0)
-            cubeGeometry.draw(objMvpMatrix, obj.selected)
+            Matrix.multiplyMM(shapedModelMatrix, 0, modelMatrix, 0, obj.shapeMatrix, 0)
+            Matrix.multiplyMM(objMvpMatrix, 0, mvpMatrix, 0, shapedModelMatrix, 0)
+            when (obj.type) {
+                MeshType.CUBE -> cubeGeometry.draw(objMvpMatrix, obj.selected)
+                MeshType.PLANE -> planeGeometry.draw(objMvpMatrix, obj.selected)
+                MeshType.CIRCLE -> circleGeometry.draw(objMvpMatrix, obj.selected)
+                MeshType.UV_SPHERE -> uvSphereGeometry.draw(objMvpMatrix, obj.selected)
+                MeshType.ICO_SPHERE -> icoSphereGeometry.draw(objMvpMatrix, obj.selected)
+                MeshType.CYLINDER -> cylinderGeometry.draw(objMvpMatrix, obj.selected)
+                MeshType.CONE -> coneGeometry.draw(objMvpMatrix, obj.selected)
+                MeshType.TORUS -> torusGeometry.draw(objMvpMatrix, obj.selected)
+                MeshType.GRID -> gridMeshGeometry.draw(objMvpMatrix, obj.selected)
+                MeshType.MONKEY -> monkeyGeometry.draw(objMvpMatrix, obj.selected)
+            }
         }
 
-        // Gizmo de transformacion sobre el objeto seleccionado: se dibuja SIN la rotacion/escala
-        // del objeto (siempre alineado a los ejes del mundo, "Global" orientation - igual que el
-        // default de Blender), solo trasladado a su posicion y escalado a tamano de pantalla
-        // constante. gizmoMode decide si se dibujan flechas (Move) o anillos (Rotate) - ver
-        // MainActivity.setLayoutTool. activeRotateAxis/activeMoveAxis (sincronizados desde
-        // MainActivity.axisLocked segun la herramienta activa) deciden, dentro de cada modo, si se
-        // resalta un solo eje agarrado o los 3 en su modo normal.
+        // Gizmo de transformacion sobre el objeto seleccionado: la orientacion (mundo fijo vs
+        // rotado con el objeto) la decide transformOrientation (ver enum TransformOrientation y
+        // el selector Global/Local en MainActivity) - aplica por igual a los 3 modos (Move/Rotate/
+        // Scale), no solo a Scale como antes de agregar el selector. gizmoMode decide si se
+        // dibujan flechas (Move), anillos (Rotate) o cubitos (Scale) - ver MainActivity.setLayoutTool.
+        // activeRotateAxis/activeMoveAxis/activeScaleAxis (sincronizados desde MainActivity.axisLocked
+        // segun la herramienta activa) deciden, dentro de cada modo, si se resalta un solo eje
+        // agarrado o los 3 en su modo normal.
         val mode = gizmoMode
         if (mode != null) {
             val selectedObj = sceneObjects.firstOrNull { it.selected }
@@ -458,12 +982,23 @@ class MyGLRenderer : GLSurfaceView.Renderer {
                 val gizmoModel = FloatArray(16)
                 Matrix.setIdentityM(gizmoModel, 0)
                 Matrix.translateM(gizmoModel, 0, selectedObj.posX, selectedObj.posY, selectedObj.posZ)
+                // LOCAL: el gizmo rota junto con el objeto, para que lo que ves coincida siempre
+                // con lo que va a pasar al arrastrar (ver comentario del enum TransformOrientation
+                // sobre el trade-off con GLOBAL). GLOBAL: se deja el gizmo sin rotar (comportamiento
+                // de mas abajo, sin este bloque) - se ve "prolijo" pero, para Scale con el objeto
+                // rotado, el resultado real puede deformar en diagonal (charlado con el usuario).
+                if (transformOrientation == TransformOrientation.LOCAL) {
+                    val rotatedGizmoModel = FloatArray(16)
+                    Matrix.multiplyMM(rotatedGizmoModel, 0, gizmoModel, 0, selectedObj.rotationMatrix, 0)
+                    System.arraycopy(rotatedGizmoModel, 0, gizmoModel, 0, 16)
+                }
                 Matrix.scaleM(gizmoModel, 0, gizmoScreenScale, gizmoScreenScale, gizmoScreenScale)
                 val gizmoMvpMatrix = FloatArray(16)
                 Matrix.multiplyMM(gizmoMvpMatrix, 0, mvpMatrix, 0, gizmoModel, 0)
                 val activeAxisForMode = when (mode) {
                     GizmoMode.ROTATE -> activeRotateAxis
                     GizmoMode.MOVE -> activeMoveAxis
+                    GizmoMode.SCALE -> activeScaleAxis
                 }
                 gizmo.draw(
                     gizmoMvpMatrix,
@@ -472,13 +1007,20 @@ class MyGLRenderer : GLSurfaceView.Renderer {
                     activeAxisForMode
                 )
 
-                // Anillo trackball (blanco, solo en Rotate y solo sin eje activo - con un anillo
+                // Anillo trackball (blanco, en Rotate y Scale, solo sin eje activo - con un eje
                 // agarrado el trackball se oculta, igual que Blender oculta el resto del gizmo
                 // cuando estas arrastrando un eje puntual): billboard, siempre de cara a la camara
                 // sin importar la orbita - se logra multiplicando por la inversa de rotationMatrix
-                // (transpuesta, al ser una rotacion pura) antes de escalar. Representa el gesto de
-                // rotacion libre, que ya funciona via rotateSelectedObject.
-                if (mode == GizmoMode.ROTATE && activeRotateAxis == null) {
+                // (transpuesta, al ser una rotacion pura) antes de escalar. En Rotate representa la
+                // rotacion libre (rotateSelectedObject); en Scale representa el escalado uniforme
+                // libre (scaleSelectedObject) - mismo anillo reusado como referencia visual para
+                // los dos gestos "sin eje" (ver charla con el usuario). El trackball es rotation-
+                // invariant (billboard de camara, no de objeto) porque el escalado uniforme libre
+                // no tiene el problema de Scale por eje (escalar los 3 ejes por igual conmuta con
+                // cualquier rotacion), asi que no necesita el mismo ajuste que el bloque de arriba.
+                val showTrackball = (mode == GizmoMode.ROTATE && activeRotateAxis == null) ||
+                    (mode == GizmoMode.SCALE && activeScaleAxis == null)
+                if (showTrackball) {
                     val inverseOrbit = FloatArray(16)
                     Matrix.transposeM(inverseOrbit, 0, rotationMatrix, 0)
 
@@ -514,7 +1056,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
                     Matrix.translateM(translateOnlyModel, 0, selectedObj.posX, selectedObj.posY, selectedObj.posZ)
                     val lineMvpMatrix = FloatArray(16)
                     Matrix.multiplyMM(lineMvpMatrix, 0, mvpMatrix, 0, translateOnlyModel, 0)
-                    gizmo.drawInfiniteAxisLine(lineMvpMatrix, axisDirection(axisChar), axisColor)
+                    gizmo.drawInfiniteAxisLine(lineMvpMatrix, effectiveAxisDirection(axisChar, selectedObj), axisColor)
 
                     val liveDir = activeRotateCurrentDir ?: activeRotateStartDir
                     if (liveDir != null) {
@@ -537,7 +1079,27 @@ class MyGLRenderer : GLSurfaceView.Renderer {
                     Matrix.translateM(translateOnlyModel, 0, selectedObj.posX, selectedObj.posY, selectedObj.posZ)
                     val lineMvpMatrix = FloatArray(16)
                     Matrix.multiplyMM(lineMvpMatrix, 0, mvpMatrix, 0, translateOnlyModel, 0)
-                    gizmo.drawInfiniteAxisLine(lineMvpMatrix, axisDirection(axisChar), axisColor)
+                    gizmo.drawInfiniteAxisLine(lineMvpMatrix, effectiveAxisDirection(axisChar, selectedObj), axisColor)
+
+                    gizmo.drawCenterCrosshair(gizmoMvpMatrix)
+                }
+
+                // Con un cubito de Scale agarrado: mismo criterio que Move (linea infinita del eje
+                // + crucecita del pivote, sin marca de angulo - eso es propio de Rotate). Usa
+                // effectiveAxisDirection (no rotatedAxisDirection a secas) - la linea infinita
+                // tiene que seguir la misma direccion que el resto del gizmo de Scale en este
+                // frame (mundo o local, segun transformOrientation), o quedaria apuntando a un
+                // lado distinto del cubito que se ve en pantalla.
+                if (mode == GizmoMode.SCALE && activeScaleAxis != null) {
+                    val axisChar = activeScaleAxis!!
+                    val axisColor = gizmo.colorForAxis(axisChar)
+
+                    val translateOnlyModel = FloatArray(16)
+                    Matrix.setIdentityM(translateOnlyModel, 0)
+                    Matrix.translateM(translateOnlyModel, 0, selectedObj.posX, selectedObj.posY, selectedObj.posZ)
+                    val lineMvpMatrix = FloatArray(16)
+                    Matrix.multiplyMM(lineMvpMatrix, 0, mvpMatrix, 0, translateOnlyModel, 0)
+                    gizmo.drawInfiniteAxisLine(lineMvpMatrix, effectiveAxisDirection(axisChar, selectedObj), axisColor)
 
                     gizmo.drawCenterCrosshair(gizmoMvpMatrix)
                 }
@@ -549,7 +1111,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
      * Convierte un punto de pantalla (coordenadas de vista, no NDC) en un rayo 3D (origen +
      * direccion), usando la matriz camara+orbita del ultimo frame dibujado (scratch). Compartido
      * por selectObjectAt (seleccion de objetos) y los hit-test del gizmo (hitTestGizmoAxis,
-     * hitTestGizmoRotateAxis).
+     * hitTestGizmoRotateAxis, hitTestGizmoScaleAxis).
      */
     private fun screenPointToRay(screenX: Float, screenY: Float): Pair<FloatArray, FloatArray>? {
         if (viewportWidth <= 0 || viewportHeight <= 0) return null
@@ -581,6 +1143,16 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     }
 
     /**
+     * Deselecciona todos los objetos (Layout > Select > None) - mismo criterio que selectObjectAt
+     * tocando espacio vacio. No pasa por Undo (igual que selectObjectAt/hitTestGizmoRotateAxis):
+     * la seleccion se trata como estado de UI, no como una edicion de la escena - Blender tampoco
+     * mete los cambios de seleccion en su historial de Undo principal.
+     */
+    fun deselectAll() {
+        for (obj in sceneObjects) obj.selected = false
+    }
+
+    /**
      * Convierte un tap en pantalla en un rayo 3D y selecciona el objeto mas cercano que
      * intersecta. Si no hay hit, deselecciona todo (igual que tocar espacio vacio en Blender).
      */
@@ -590,7 +1162,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         var hitObject: SceneObject? = null
         var closestT = Float.MAX_VALUE
         for (obj in sceneObjects) {
-            val t = intersectAABB(rayOrigin, rayDir, obj.posX, obj.posY, obj.posZ, obj.scale)
+            val t = intersectAABB(rayOrigin, rayDir, obj.posX, obj.posY, obj.posZ, obj.shapeMatrix)
             if (t != null && t < closestT) {
                 closestT = t
                 hitObject = obj
@@ -623,7 +1195,38 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         var bestAxis: Char? = null
         var bestDist = Float.MAX_VALUE
         for (axisChar in listOf('X', 'Y', 'Z')) {
-            val dist = closestDistanceRayToSegment(rayOrigin, rayDir, segStart, axisDirection(axisChar), axisLength)
+            val dist = closestDistanceRayToSegment(rayOrigin, rayDir, segStart, effectiveAxisDirection(axisChar, selected), axisLength)
+            if (dist < hitRadius && dist < bestDist) {
+                bestDist = dist
+                bestAxis = axisChar
+            }
+        }
+        return bestAxis
+    }
+
+    /**
+     * Hit-test del gizmo de Scale: mismo criterio que hitTestGizmoAxis (distancia minima rayo-
+     * segmento, un segmento por eje), pero con el largo y el radio de tolerancia propios de Scale
+     * (shaft + cubito, ver Gizmo3D.SCALE_BOX_HALF_SIZE) en vez de shaft + punta de flecha. Usa
+     * effectiveAxisDirection (no un axisDirection/rotatedAxisDirection fijo) - el cubito de cada
+     * eje se dibuja en la orientacion elegida (ver onDrawFrame), asi que el segmento contra el que
+     * se mide la distancia del toque tiene que estar en esa misma orientacion, o el hit-test
+     * terminaria probando contra una posicion distinta de donde el cubito realmente se ve.
+     * Devuelve null si no hay objeto seleccionado o si ningun eje esta lo bastante cerca (el
+     * arrastre cae entonces al escalado uniforme libre, ver scaleSelectedObject).
+     */
+    fun hitTestGizmoScaleAxis(screenX: Float, screenY: Float): Char? {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return null
+        val (rayOrigin, rayDir) = screenPointToRay(screenX, screenY) ?: return null
+
+        val segStart = floatArrayOf(selected.posX, selected.posY, selected.posZ)
+        val axisLength = gizmoScreenScale * (Gizmo3D.SHAFT_LENGTH + Gizmo3D.SCALE_BOX_HALF_SIZE)
+        val hitRadius = gizmoScreenScale * 0.18f
+
+        var bestAxis: Char? = null
+        var bestDist = Float.MAX_VALUE
+        for (axisChar in listOf('X', 'Y', 'Z')) {
+            val dist = closestDistanceRayToSegment(rayOrigin, rayDir, segStart, effectiveAxisDirection(axisChar, selected), axisLength)
             if (dist < hitRadius && dist < bestDist) {
                 bestDist = dist
                 bestAxis = axisChar
@@ -657,7 +1260,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         var bestDist = Float.MAX_VALUE
         var bestDir: FloatArray? = null
         for (axisChar in listOf('X', 'Y', 'Z')) {
-            val normal = axisDirection(axisChar)
+            val normal = effectiveAxisDirection(axisChar, selected)
             val denom = dot(rayDir, normal)
             if (abs(denom) < 1e-6f) continue
 
@@ -698,7 +1301,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         val selected = sceneObjects.firstOrNull { it.selected } ?: return
         val (rayOrigin, rayDir) = screenPointToRay(screenX, screenY) ?: return
         val center = floatArrayOf(selected.posX, selected.posY, selected.posZ)
-        val normal = axisDirection(axis)
+        val normal = effectiveAxisDirection(axis, selected)
         val denom = dot(rayDir, normal)
         if (abs(denom) < 1e-6f) return
         val diff = floatArrayOf(center[0] - rayOrigin[0], center[1] - rayOrigin[1], center[2] - rayOrigin[2])
@@ -746,16 +1349,27 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     private fun dot(a: FloatArray, b: FloatArray) = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
     /**
-     * Interseccion rayo-caja axis-aligned (metodo slab), caja de medio-lado 0.5*scale centrada
-     * en (objX, objY, objZ). Ignora la rotacion del objeto a proposito (bounding box sin rotar,
-     * mas grande de lo justo cuando el objeto esta rotado) - suficiente para seleccionar por
-     * ahora, afinar esto requeriria un OBB (oriented bounding box) o transformar el rayo al
-     * espacio local del objeto.
+     * Interseccion rayo-caja axis-aligned (metodo slab), caja de medio-lado 0.5*largoColumna por
+     * eje (columnLength generaliza los scaleX/Y/Z sueltos que tenia antes el modelo de datos - ver
+     * SceneObject.shapeMatrix) centrada en (objX, objY, objZ). Ignora la rotacion del objeto (y
+     * cualquier shear de shapeMatrix) a proposito (bounding box sin rotar, mas grande de lo justo
+     * cuando el objeto esta rotado o deformado) - misma simplificacion deliberada que ya existia
+     * con scaleX/Y/Z sueltos, suficiente para seleccionar por ahora; afinar esto requeriria un OBB
+     * (oriented bounding box) o transformar el rayo al espacio local del objeto.
      */
-    private fun intersectAABB(rayOrigin: FloatArray, rayDir: FloatArray, objX: Float, objY: Float, objZ: Float, scale: Float): Float? {
-        val halfExtent = 0.5f * scale
-        val minB = floatArrayOf(objX - halfExtent, objY - halfExtent, objZ - halfExtent)
-        val maxB = floatArrayOf(objX + halfExtent, objY + halfExtent, objZ + halfExtent)
+    private fun intersectAABB(
+        rayOrigin: FloatArray, rayDir: FloatArray,
+        objX: Float, objY: Float, objZ: Float,
+        shapeMatrix: FloatArray
+    ): Float? {
+        val halfExtent = floatArrayOf(
+            0.5f * columnLength(shapeMatrix, 0),
+            0.5f * columnLength(shapeMatrix, 1),
+            0.5f * columnLength(shapeMatrix, 2)
+        )
+        val center = floatArrayOf(objX, objY, objZ)
+        val minB = FloatArray(3) { center[it] - halfExtent[it] }
+        val maxB = FloatArray(3) { center[it] + halfExtent[it] }
         var tMin = -Float.MAX_VALUE
         var tMax = Float.MAX_VALUE
 
