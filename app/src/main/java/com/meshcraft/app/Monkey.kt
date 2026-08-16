@@ -45,7 +45,7 @@ import kotlin.math.sqrt
  * una vez por cada triangulo que lo toca. Mismo edgeScale (1.003) que el resto de las primitivas
  * para que el contorno no quede exactamente pegado a la superficie (z-fighting).
  */
-class Monkey {
+internal object MonkeyMeshData {
 
     private val objVertices = floatArrayOf(
         0.218750f, 0.082031f, 0.382812f, -0.218750f, 0.082031f, 0.382812f, 0.250000f, 0.046875f, 0.343750f,
@@ -219,7 +219,14 @@ class Monkey {
         -0.394531f, -0.062500f, -0.164062f, 0.429688f, 0.191406f, -0.191406f, -0.429688f, 0.191406f, -0.191406f
     )
 
-    private val faceIndices = shortArrayOf(
+    // internal (no private): EditableMesh.kt (MeshType.toEditableMesh, ver ahi) necesita estos
+    // datos crudos para construir la version editable del mono (Fase 3 del plan de Edit Mode,
+    // ver charla con el supervisor - "que el resto de las primitivas sean editables") - misma
+    // idea que ya usa el resto de las primitivas (Circle/UvSphere/etc via sus propios parametros
+    // de constructor), pero aca no alcanza con reconstruir la formula: el mono viene de datos de
+    // malla reales (.obj), no de una formula parametrica, asi que hace falta exponer el resultado
+    // ya calculado (rawVertices, mas abajo) en vez de reimplementarlo.
+    internal val faceIndices = shortArrayOf(
         46, 2, 44, 3, 47, 45, 44, 4, 42, 5, 45, 43,
         2, 6, 4, 7, 3, 5, 0, 8, 2, 9, 1, 3,
         10, 14, 8, 15, 11, 9, 8, 16, 6, 17, 9, 7,
@@ -464,7 +471,8 @@ class Monkey {
         504, 506, 314, 319, 321, 503, 504, 322, 320
     )
 
-    private val rawVertices = FloatArray(objVertices.size).also { arr ->
+    // internal (no private) por el mismo motivo que faceIndices, arriba - ver ese comentario.
+    internal val rawVertices = FloatArray(objVertices.size).also { arr ->
         for (v in objVertices.indices step 3) {
             val x = objVertices[v]
             val y = objVertices[v + 1]
@@ -474,6 +482,13 @@ class Monkey {
             arr[v + 2] = y
         }
     }
+
+    private val edgeScale = 1.003f
+}
+
+class Monkey {
+    private val faceIndices get() = MonkeyMeshData.faceIndices
+    private val rawVertices get() = MonkeyMeshData.rawVertices
 
     private val edgeScale = 1.003f
 
@@ -490,7 +505,7 @@ class Monkey {
         val fVerts = mutableListOf<Float>()
         val fNorms = mutableListOf<Float>()
 
-        val triCount = faceIndices.size / 3
+        val triCount = MonkeyMeshData.faceIndices.size / 3
         for (t in 0 until triCount) {
             val ia = faceIndices[t * 3].toInt()
             val ib = faceIndices[t * 3 + 1].toInt()

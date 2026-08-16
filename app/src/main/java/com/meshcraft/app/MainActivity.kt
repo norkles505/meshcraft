@@ -21,6 +21,8 @@ import android.widget.Toast
 
 enum class AppMode { LAYOUT, MODELING, UV_EDITING }
 enum class LayoutTool { SELECT, MOVE, ROTATE, SCALE }
+/** Modo de selección de sub-elemento dentro de Edit Mode (Modeling) - toggle Vertex/Edge/Face, mismo criterio que Blender. */
+enum class EditSelectMode { VERTEX, EDGE, FACE }
 
 class MainActivity : Activity() {
 
@@ -57,6 +59,17 @@ class MainActivity : Activity() {
 
     private var currentMode: AppMode = AppMode.LAYOUT
     private var currentLayoutTool: LayoutTool = LayoutTool.SELECT
+
+    /**
+     * Fila inferior de Modeling (Edit Mode): toggle Vertex/Edge/Face select mode, solo texto/icono
+     * por ahora (ver setEditSelectMode) - conectar a raycast real de sub-elementos cuando exista
+     * el modelo de datos editable (Fase 1 de Edit Mode).
+     */
+    private lateinit var editSelectModeRow: LinearLayout
+    private lateinit var vertexModeBtn: ImageView
+    private lateinit var edgeModeBtn: ImageView
+    private lateinit var faceModeBtn: ImageView
+    private var currentEditSelectMode: EditSelectMode = EditSelectMode.VERTEX
 
     /**
      * Eje al que quedo restringido el arrastre actual (X/Y/Z), si empezo tocando el gizmo (ver
@@ -393,6 +406,17 @@ class MainActivity : Activity() {
         ).apply {
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
             leftMargin = margin
+        })
+
+        editSelectModeRow = buildEditSelectModeRow()
+        editSelectModeRow.visibility = View.GONE
+        root.addView(editSelectModeRow, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.START
+            leftMargin = margin
+            bottomMargin = margin
         })
 
         root.addView(buildTopBar(), FrameLayout.LayoutParams(
@@ -775,6 +799,13 @@ class MainActivity : Activity() {
         // seleccion que ya usa el tap en el viewport. Modeling comparte esta misma funcion para
         // su propio menu Select, pero ahi "None" todavia no tiene nada real que hacer (no existe
         // geometria editable en Edit Mode todavia) - sigue en Toast para ese caso.
+        if (currentMode == AppMode.MODELING) {
+            when (action) {
+                "All" -> { glView.renderer.selectAllMeshElements(currentEditSelectMode); glView.requestRender(); return }
+                "None" -> { glView.renderer.deselectAllMeshElements(currentEditSelectMode); glView.requestRender(); return }
+                "Invert" -> { glView.renderer.invertMeshElementSelection(currentEditSelectMode); glView.requestRender(); return }
+            }
+        }
         if (currentMode == AppMode.LAYOUT && action == "None") {
             glView.renderer.deselectAll()
             glView.requestRender()
@@ -1337,6 +1368,15 @@ class MainActivity : Activity() {
     }
 
     private fun onModelingMenuAction(action: String) {
+        // Modeling > Mesh > Delete: ya tiene logica real (ver MyGLRenderer.deleteSelectedMeshElements),
+        // a diferencia del resto de los items de este menu (todavia Toast placeholder). Opera sobre
+        // el modo de sub-elemento activo (currentEditSelectMode), mismo criterio que Select All/None/Invert.
+        if (action == "Delete") {
+            val deleted = glView.renderer.deleteSelectedMeshElements(currentEditSelectMode)
+            glView.requestRender()
+            if (!deleted) Toast.makeText(this, "Selecciona algo para borrar", Toast.LENGTH_SHORT).show()
+            return
+        }
         // TODO: conectar a la logica real de edicion de malla una vez que exista el modelo editable (Edit Mode).
         Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
     }
@@ -1502,7 +1542,11 @@ class MainActivity : Activity() {
 
         for (entry in modelingToolEntries) {
             val btn = createIconButton(entry.iconRes)
-            btn.setOnClickListener { setModelingExtraTool(entry.label) }
+            if (entry.label == "Extrude Region") {
+                btn.setOnClickListener { onExtrudeRegionClicked() }
+            } else {
+                btn.setOnClickListener { setModelingExtraTool(entry.label) }
+            }
             (btn.layoutParams as LinearLayout.LayoutParams).topMargin = spacing
             modelingExtraToolButtons[entry.label] = btn
             column.addView(btn)
@@ -1513,12 +1557,39 @@ class MainActivity : Activity() {
         return column
     }
 
+    /**
+     * Prende el gizmo correspondiente (flechas/anillos/cubitos) al elegir Move/Rotate/Scale en
+     * Modeling (Edit Mode) - igual que en Layout.
+     */
     private fun setModelingTool(tool: LayoutTool) {
         currentModelingTool = tool
         currentModelingExtraTool = null
         updateModelingToolHighlight()
-        // TODO: conectar cada herramienta a su logica real (seleccionar/mover/rotar/escalar geometria)
-        // una vez que exista el modelo de escena editable (Edit Mode).
+        glView.renderer.gizmoMode = when (tool) {
+            LayoutTool.MOVE -> GizmoMode.MOVE
+            LayoutTool.ROTATE -> GizmoMode.ROTATE
+            LayoutTool.SCALE -> GizmoMode.SCALE
+            else -> null
+        }
+    }
+
+    /**
+     * Modeling > Extrude Region (boton de la barra izquierda, Fase 3 del plan de Edit Mode - ver
+     * charla con el supervisor): a diferencia del resto de las herramientas "extra" (Bevel, Loop
+     * Cut, etc, que por ahora solo resaltan el boton y muestran un Toast, ver setModelingExtraTool),
+     * esta ya tiene logica real (ver MyGLRenderer.extrudeSelectedFaces). Al extruir con exito,
+     * encadena automaticamente el modo Move (arrastre libre) - mismo flujo que "E" seguido de "G"
+     * implicito en Blender real, para que el usuario pueda "tirar" la extrusion de una sola vez sin
+     * tener que tocar el boton de Move aparte.
+     */
+    private fun onExtrudeRegionClicked() {
+        val extruded = glView.renderer.extrudeSelectedFaces()
+        if (extruded) {
+            setModelingTool(LayoutTool.MOVE)
+            glView.requestRender()
+        } else {
+            Toast.makeText(this, "Selecciona al menos una cara para extruir", Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** Herramienta "de un solo toque" (Extrude Region, Bevel, etc.) - queda resaltada hasta elegir otra. */
@@ -1540,6 +1611,57 @@ class MainActivity : Activity() {
         for ((label, btn) in modelingExtraToolButtons) {
             btn.background = circleBackground(currentModelingExtraTool == label)
         }
+    }
+
+    /**
+     * Fila horizontal Vertex/Edge/Face (a diferencia de las columnas verticales de herramientas):
+     * son 3 estados mutuamente excluyentes de un mismo selector, no una lista de acciones - mismo
+     * criterio visual que usa Blender (los 3 juntos, uno al lado del otro).
+     */
+    private fun buildEditSelectModeRow(): LinearLayout {
+        val density = resources.displayMetrics.density
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+
+        vertexModeBtn = createIconButton(R.drawable.ic_mode_vertex)
+        edgeModeBtn = createIconButton(R.drawable.ic_mode_edge)
+        faceModeBtn = createIconButton(R.drawable.ic_mode_face)
+
+        vertexModeBtn.setOnClickListener { setEditSelectMode(EditSelectMode.VERTEX) }
+        edgeModeBtn.setOnClickListener { setEditSelectMode(EditSelectMode.EDGE) }
+        faceModeBtn.setOnClickListener { setEditSelectMode(EditSelectMode.FACE) }
+
+        val spacing = (8 * density).toInt()
+        for (btn in listOf(vertexModeBtn, edgeModeBtn, faceModeBtn)) {
+            (btn.layoutParams as LinearLayout.LayoutParams).leftMargin = spacing
+            row.addView(btn)
+        }
+        (vertexModeBtn.layoutParams as LinearLayout.LayoutParams).leftMargin = 0
+
+        updateEditSelectModeHighlight()
+        return row
+    }
+
+    /**
+     * Cambia el modo de selección de sub-elemento: antes de togglear el modo, convierte la
+     * selección actual al modo nuevo via MyGLRenderer.convertSelectionOnModeChange (misma
+     * conversión que Blender - una cara seleccionada pasa a Vertex con sus 4 vértices marcados,
+     * ver comentario de esa función) en vez de perderla. draw() de DynamicMeshGeometry lee
+     * `.selected` en vivo desde la malla (ver comentario de esa clase), asi que no hace falta
+     * reconstruir geometria - alcanza con requestRender() para que el cambio se vea en el
+     * proximo frame.
+     */
+    private fun setEditSelectMode(mode: EditSelectMode) {
+        glView.renderer.convertSelectionOnModeChange(currentEditSelectMode, mode)
+        currentEditSelectMode = mode
+        updateEditSelectModeHighlight()
+        glView.requestRender()
+    }
+
+    private fun updateEditSelectModeHighlight() {
+        vertexModeBtn.background = circleBackground(currentEditSelectMode == EditSelectMode.VERTEX)
+        edgeModeBtn.background = circleBackground(currentEditSelectMode == EditSelectMode.EDGE)
+        faceModeBtn.background = circleBackground(currentEditSelectMode == EditSelectMode.FACE)
     }
 
     private fun setLayoutTool(tool: LayoutTool) {
@@ -1568,14 +1690,49 @@ class MainActivity : Activity() {
     }
 
     /**
-     * ACTION_DOWN en el viewport: si estamos en Layout con Move, Rotate o Scale activos y hay un
-     * objeto seleccionado, intenta el hit-test contra el gizmo correspondiente (flechas para Move
-     * via hitTestGizmoAxis, anillos para Rotate via hitTestGizmoRotateAxis, cubitos para Scale via
-     * hitTestGizmoScaleAxis). Si el dedo toco el gizmo, el arrastre que sigue queda restringido a
-     * ese eje (ver onViewportDragMove); si no, cae al gesto libre de siempre.
+     * ACTION_DOWN en el viewport. En Modeling: con Move activo, hace el hit-test del gizmo de
+     * flechas (ver hitTestGizmoAxis, mismo hit-test que Object Mode) y guarda un snapshot de Undo
+     * si hay algo seleccionado; con Scale activo hace el hit-test del gizmo de cubitos
+     * (hitTestGizmoScaleAxis); con Rotate activo hace el hit-test del gizmo de anillos
+     * (hitTestGizmoRotateAxis) y prepara la etiqueta de eje (X/Y/Z), mismo criterio que Layout.
+     *
+     * En Layout: si estamos con Move, Rotate o Scale activos y hay un objeto seleccionado, intenta
+     * el hit-test contra el gizmo correspondiente (flechas para Move via hitTestGizmoAxis, anillos
+     * para Rotate via hitTestGizmoRotateAxis, cubitos para Scale via hitTestGizmoScaleAxis). Si el
+     * dedo toco el gizmo, el arrastre que sigue queda restringido a ese eje (ver
+     * onViewportDragMove); si no, cae al gesto libre de siempre.
      */
     private fun onViewportDragStart(x: Float, y: Float) {
         axisLocked = null
+        if (currentMode == AppMode.MODELING) {
+            if (currentModelingTool == LayoutTool.MOVE && glView.renderer.hasSelectedMeshElements()) {
+                axisLocked = glView.renderer.hitTestGizmoAxis(x, y)
+                glView.renderer.activeMoveAxis = axisLocked
+                glView.renderer.pushUndoSnapshot()
+            }
+            if (currentModelingTool == LayoutTool.SCALE && glView.renderer.hasSelectedMeshElements()) {
+                glView.renderer.pushUndoSnapshot()
+                axisLocked = glView.renderer.hitTestGizmoScaleAxis(x, y)
+                glView.renderer.activeScaleAxis = axisLocked
+            }
+            if (currentModelingTool == LayoutTool.ROTATE && glView.renderer.hasSelectedMeshElements()) {
+                axisLocked = glView.renderer.hitTestGizmoRotateAxis(x, y)
+                glView.renderer.activeRotateAxis = axisLocked
+                gizmoLabelView.labelText = null
+                if (axisLocked != null) {
+                    val axisNow = axisLocked!!
+                    val anchor = glView.renderer.computeRotateLabelAnchor()
+                    if (anchor != null) {
+                        gizmoLabelView.labelText = axisNow.toString()
+                        gizmoLabelView.labelX = anchor[0]
+                        gizmoLabelView.labelY = anchor[1]
+                    }
+                }
+                gizmoLabelView.invalidate()
+                glView.renderer.pushUndoSnapshot()
+            }
+            return
+        }
         if (currentMode != AppMode.LAYOUT) return
         if (currentLayoutTool == LayoutTool.MOVE || currentLayoutTool == LayoutTool.ROTATE || currentLayoutTool == LayoutTool.SCALE) {
             if (glView.renderer.sceneObjects.any { it.selected }) {
@@ -1621,6 +1778,14 @@ class MainActivity : Activity() {
      * onViewportDragMove).
      */
     private fun onViewportTap(x: Float, y: Float) {
+        if (currentMode == AppMode.MODELING) {
+            if (currentModelingTool == LayoutTool.SELECT) {
+                glView.renderer.selectMeshElementAt(x, y, currentEditSelectMode)
+                glView.requestRender()
+            }
+            return
+        }
+
         if (currentMode != AppMode.LAYOUT) return
         if (currentLayoutTool != LayoutTool.SELECT) return
         glView.renderer.selectObjectAt(x, y)
@@ -1628,17 +1793,58 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Arrastre en el viewport 3D: si estamos en Layout con Move, Rotate o Scale activos, aplica
-     * esa transformacion al objeto seleccionado en vez de rotar la camara (que es el
-     * comportamiento por defecto del gesto, ver MyGLSurfaceView.onDragMove). Los 3 quedan
-     * restringidos a un eje si el arrastre empezo tocando el gizmo (ver onViewportDragStart /
-     * axisLocked); si no, caen al gesto libre de siempre (Scale libre = escala uniforme, ver
-     * MyGLRenderer.scaleSelectedObject). Si no hay ningun objeto seleccionado, el arrastre no hace
-     * nada - a proposito no cae a rotar la camara, para que quede claro que estas en una de estas
-     * herramientas sin nada para transformar. Devuelve true (arrastre consumido) siempre que una
-     * de las tres este activa, se haya transformado algo o no.
+     * Arrastre en el viewport 3D.
+     *
+     * En Modeling: con Move activo, mueve los vertices/aristas/caras seleccionados (libre o
+     * restringido a eje - ver MyGLRenderer.moveSelectedMeshElements/moveSelectedMeshElementsOnAxis).
+     * Con Rotate activo, los rota libre o restringido a eje alrededor del centro de la seleccion
+     * (ver MyGLRenderer.rotateSelectedMeshElements/rotateSelectedMeshElementsOnAxis). Con Scale
+     * activo, los escala libre (uniforme) o restringido a eje alrededor de ese mismo centro (ver
+     * MyGLRenderer.scaleSelectedMeshElements/scaleSelectedMeshElementsOnAxis). No cae a rotar la
+     * camara aunque no haya nada seleccionado, mismo criterio que Layout con Move/Rotate/Scale
+     * (ver comentario de abajo).
+     *
+     * En Layout: si estamos con Move, Rotate o Scale activos, aplica esa transformacion al objeto
+     * seleccionado en vez de rotar la camara (que es el comportamiento por defecto del gesto, ver
+     * MyGLSurfaceView.onDragMove). Los 3 quedan restringidos a un eje si el arrastre empezo tocando
+     * el gizmo (ver onViewportDragStart / axisLocked); si no, caen al gesto libre de siempre (Scale
+     * libre = escala uniforme, ver MyGLRenderer.scaleSelectedObject). Si no hay ningun objeto
+     * seleccionado, el arrastre no hace nada - a proposito no cae a rotar la camara, para que quede
+     * claro que estas en una de estas herramientas sin nada para transformar. Devuelve true
+     * (arrastre consumido) siempre que una de las tres este activa, se haya transformado algo o no.
      */
     private fun onViewportDragMove(dx: Float, dy: Float, x: Float, y: Float): Boolean {
+        if (currentMode == AppMode.MODELING) {
+            if (currentModelingTool == LayoutTool.MOVE) {
+                val axis = axisLocked
+                if (axis != null) {
+                    glView.renderer.moveSelectedMeshElementsOnAxis(dx, dy, axis)
+                } else {
+                    glView.renderer.moveSelectedMeshElements(dx, dy)
+                }
+                return true
+            }
+            if (currentModelingTool == LayoutTool.ROTATE) {
+                val rotAxis = axisLocked
+                if (rotAxis != null) {
+                    glView.renderer.updateActiveRotateCurrentDir(x, y, rotAxis)
+                    glView.renderer.rotateSelectedMeshElementsOnAxis(dx, dy, rotAxis)
+                    return true
+                }
+                glView.renderer.rotateSelectedMeshElements(dx, dy)
+                return true
+            }
+            if (currentModelingTool == LayoutTool.SCALE) {
+                val scaleAxis = axisLocked
+                if (scaleAxis != null) {
+                    glView.renderer.scaleSelectedMeshElementsOnAxis(dx, dy, scaleAxis)
+                    return true
+                }
+                glView.renderer.scaleSelectedMeshElements(dy)
+                return true
+            }
+            return false
+        }
         if (currentMode != AppMode.LAYOUT) return false
         return when (currentLayoutTool) {
             LayoutTool.MOVE -> {
@@ -1678,6 +1884,21 @@ class MainActivity : Activity() {
         updateModeHighlight()
         leftToolColumn.visibility = if (mode == AppMode.LAYOUT) View.VISIBLE else View.GONE
         modelingToolWrapper.visibility = if (mode == AppMode.MODELING) View.VISIBLE else View.GONE
+        editSelectModeRow.visibility = if (mode == AppMode.MODELING) View.VISIBLE else View.GONE
+        // Unica fuente de verdad para el criterio visual de Edit Mode (wireframe negro + resaltado
+        // naranja de sub-elementos vs. contorno naranja de objeto completo, ver MyGLRenderer.isEditMode
+        // y onDrawFrame) - se togglea aca, en cada cambio de modo, para que quede sincronizado con
+        // currentMode sin duplicar esta condicion en otro lado.
+        glView.renderer.isEditMode = (mode == AppMode.MODELING)
+        // Entrar a Modeling entra a Edit Mode para el objeto seleccionado (ver
+        // MyGLRenderer.enterEditModeForSelected) - crea su EditableMesh la primera vez y
+        // (re)construye su geometria de dibujo dinamica.
+        if (mode == AppMode.MODELING) {
+            val entered = glView.renderer.enterEditModeForSelected()
+            if (!entered) {
+                Toast.makeText(this, "Esta primitiva todavia no es editable", Toast.LENGTH_SHORT).show()
+            }
+        }
         // TODO: cambiar el resto de la interfaz/herramientas segun el modo (UV Editing).
     }
 

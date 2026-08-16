@@ -48,5 +48,7 @@ data class SceneObject(
     var posZ: Float = 0f,
     var rotationMatrix: FloatArray = FloatArray(16).apply { Matrix.setIdentityM(this, 0) },
     var shapeMatrix: FloatArray = FloatArray(16).apply { Matrix.setIdentityM(this, 0) },
-    var selected: Boolean = false
+    var selected: Boolean = false,
+    var editableMesh: EditableMesh? = null
+
 )

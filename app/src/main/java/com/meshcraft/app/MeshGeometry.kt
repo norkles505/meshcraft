@@ -6,7 +6,8 @@ import java.nio.ShortBuffer
 
 /**
  * Geometria solida generica (caras sombreadas + contorno naranja de seleccion), reusable por
- * cualquier primitiva (Cube, y las que se agreguen despues - Plane, UvSphere, Cylinder, etc.).
+ * cualquier primitiva (Cube, y las que se agreguen despues - Plane, UvSphere, Cylinder, etc.) y
+ * tambien por DynamicMeshGeometry (Edit Mode, ver esa clase).
  *
  * Antes (ver Cube.kt original) cada primitiva tenia su propia copia de shaders, buffers y logica
  * de draw() - mismo codigo de ~80 lineas repetido por cada geometria nueva. Ahora una primitiva
@@ -68,15 +69,19 @@ class MeshGeometry(
         }
     """.trimIndent()
 
-    private val faceVertexBuffer: FloatBuffer = GLUtils.makeFloatBuffer(faceVertices)
-    private val faceNormalBuffer: FloatBuffer = GLUtils.makeFloatBuffer(faceNormals)
-    private val faceIndexBuffer: ShortBuffer = GLUtils.makeShortBuffer(faceDrawOrder)
-    private val faceIndexCount: Int = faceDrawOrder.size
+    // var (no val): actualizables sin recrear la clase entera - ver updateGeometry(). Los
+    // programs/shaders (faceProgram/lineProgram, mas abajo) SI quedan como val, compilados una
+    // sola vez en el init - son el costo caro (glCreateShader/glCompileShader/glLinkProgram) que
+    // updateGeometry() evita repetir en cada llamada.
+    private var faceVertexBuffer: FloatBuffer = GLUtils.makeFloatBuffer(faceVertices)
+    private var faceNormalBuffer: FloatBuffer = GLUtils.makeFloatBuffer(faceNormals)
+    private var faceIndexBuffer: ShortBuffer = GLUtils.makeShortBuffer(faceDrawOrder)
+    private var faceIndexCount: Int = faceDrawOrder.size
     private val faceProgram: Int = GLUtils.buildProgram(faceVertexShaderCode, faceFragmentShaderCode)
 
-    private val edgeVertexBuffer: FloatBuffer = GLUtils.makeFloatBuffer(edgeVertices)
-    private val edgeIndexBuffer: ShortBuffer = GLUtils.makeShortBuffer(edgeDrawOrder)
-    private val edgeIndexCount: Int = edgeDrawOrder.size
+    private var edgeVertexBuffer: FloatBuffer = GLUtils.makeFloatBuffer(edgeVertices)
+    private var edgeIndexBuffer: ShortBuffer = GLUtils.makeShortBuffer(edgeDrawOrder)
+    private var edgeIndexCount: Int = edgeDrawOrder.size
     private val lineProgram: Int = GLUtils.buildProgram(lineVertexShaderCode, lineFragmentShaderCode)
 
     // Handles cacheados una sola vez (ver comentario de la clase) - antes se buscaban en cada draw().
@@ -86,6 +91,31 @@ class MeshGeometry(
 
     private val linePosHandle = GLES20.glGetAttribLocation(lineProgram, "vPosition")
     private val lineMvpHandle = GLES20.glGetUniformLocation(lineProgram, "uMVPMatrix")
+
+    /**
+     * Reemplaza los datos de posicion/normales/indices SIN recompilar shaders ni relinkear
+     * programs (esos quedan intactos, ver comentario de los campos var arriba) - solo reconstruye
+     * los FloatBuffer/ShortBuffer (buffers de cliente, no VBOs de servidor - no hay
+     * glGenBuffers/glBufferData de por medio, asi que tampoco hay nada que liberar del lado de la
+     * GPU al reemplazarlos). Pensada para geometria que cambia seguido (Edit Mode, ver
+     * DynamicMeshGeometry) - a diferencia del constructor (que SI compila shaders, pensado para
+     * llamarse una sola vez por primitiva estatica como Cube.kt).
+     */
+    fun updateGeometry(
+        faceVertices: FloatArray,
+        faceNormals: FloatArray,
+        faceDrawOrder: ShortArray,
+        edgeVertices: FloatArray,
+        edgeDrawOrder: ShortArray
+    ) {
+        faceVertexBuffer = GLUtils.makeFloatBuffer(faceVertices)
+        faceNormalBuffer = GLUtils.makeFloatBuffer(faceNormals)
+        faceIndexBuffer = GLUtils.makeShortBuffer(faceDrawOrder)
+        faceIndexCount = faceDrawOrder.size
+        edgeVertexBuffer = GLUtils.makeFloatBuffer(edgeVertices)
+        edgeIndexBuffer = GLUtils.makeShortBuffer(edgeDrawOrder)
+        edgeIndexCount = edgeDrawOrder.size
+    }
 
     /**
      * selected: si es false, se dibujan las caras solidas pero se salta el contorno naranja -

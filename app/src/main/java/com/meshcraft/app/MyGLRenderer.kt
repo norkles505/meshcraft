@@ -54,6 +54,82 @@ class MyGLRenderer : GLSurfaceView.Renderer {
      */
     val sceneObjects = mutableListOf<SceneObject>()
     private var nextObjectId = 0
+
+    /**
+     * Geometria de dibujo dinamica por objeto (ver DynamicMeshGeometry.kt), solo para los objetos
+     * que ya tienen editableMesh (ver SceneObject.editableMesh) - el resto sigue usando la
+     * geometria estatica compartida por tipo (cubeGeometry, etc.), ver onDrawFrame. Clave: id del
+     * SceneObject, no el objeto en si (sceneObjects.map/copy generan instancias nuevas en cada
+     * snapshot de Undo, el id es el unico dato estable). Se llena/actualiza en
+     * refreshDynamicGeometry, NUNCA dentro de onDrawFrame - el render corre en
+     * RENDERMODE_CONTINUOUSLY (ver MyGLSurfaceView), asi que reconstruir buffers de OpenGL ahi
+     * los recrearia 60 veces por segundo (ver comentario de DynamicMeshGeometry.update).
+     */
+    private val dynamicGeometries = mutableMapOf<Int, DynamicMeshGeometry>()
+    // Ids de SceneObject cuya geometria dinamica quedo desactualizada y falta reconstruir de verdad
+    // (ver refreshDynamicGeometry / processPendingDynamicGeometryRefreshes). Existe porque
+    // enterEditModeForSelected/undo/redo se llaman desde listeners de botones de MainActivity (hilo
+    // de UI), pero DynamicMeshGeometry.update() termina compilando shaders y creando buffers de
+    // OpenGL de verdad (GLUtils.buildProgram), y esas llamadas SOLO son validas en el hilo de render
+    // de GLSurfaceView (bug real, confirmado: la app crasheaba al tocar el tab Modeling - ver charla
+    // con el usuario). Solucion: refreshDynamicGeometry ya NO reconstruye nada en el momento, solo
+    // anota el id aca (seguro desde cualquier hilo); recien onDrawFrame (que si corre en el hilo de
+    // GL correcto) vacia la cola una vez por frame, antes de dibujar. ConcurrentHashMap.newKeySet:
+    // set thread-safe sin lock a mano, porque se escribe desde UI y se lee/limpia desde el render.
+    private val pendingDynamicGeometryRefresh = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+
+    /**
+     * Entra a Edit Mode para el objeto seleccionado: crea su EditableMesh si todavia no lo tiene
+     * (on-demand, a partir de su MeshType - ver SceneObject.editableMesh / MeshType.toEditableMesh)
+     * y encola su geometria de dibujo dinamica para reconstruirse en el proximo frame (ver
+     * refreshDynamicGeometry/pendingDynamicGeometryRefresh - la reconstruccion real de OpenGL no
+     * puede pasar aca, esto corre en el hilo de UI). Devuelve false sin hacer nada si no hay
+     * objeto seleccionado, o si esa primitiva todavia no tiene conversion a editable implementada
+     * (toEditableMesh() devuelve null - hoy solo Cube, ver EditableMesh.kt) - el llamador
+     * (MainActivity.setMode) usa esto para avisar con un Toast, mismo criterio que el resto de las
+     * acciones de la app que pueden "no hacer nada" (Delete/Duplicate/Clear sin seleccion).
+     */
+    fun enterEditModeForSelected(): Boolean {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return false
+        if (selected.editableMesh == null) {
+            selected.editableMesh = selected.type.toEditableMesh() ?: return false
+        }
+        refreshDynamicGeometry(selected)
+        return true
+    }
+
+    /**
+     * Marca la geometria de dibujo de UN objeto puntual como pendiente de reconstruir (ver
+     * pendingDynamicGeometryRefresh/processPendingDynamicGeometryRefreshes - NO toca OpenGL aca,
+     * solo encola el id, ver esa funcion para el trabajo real) -
+     * no hace nada si el objeto no tiene editableMesh (nunca entro a Edit Mode). Se llama desde
+     * enterEditModeForSelected (primera vez que se ve el objeto en modo edicion, o al volver a
+     * entrar) y desde undo()/redo() (ver ahi) - un snapshot restaurado trae su propio editableMesh,
+     * ya deep-copied, que puede tener vertices en posiciones distintas a las que estaban dibujadas
+     * antes de deshacer, asi que la geometria dinamica vieja quedaria obsoleta si no se refresca.
+     */
+    private fun refreshDynamicGeometry(obj: SceneObject) {
+        if (obj.editableMesh == null) return
+        pendingDynamicGeometryRefresh.add(obj.id)
+    }
+
+    // Vacia pendingDynamicGeometryRefresh reconstruyendo de verdad la geometria de dibujo de cada id
+    // encolado (DynamicMeshGeometry.update, que si compila shaders/buffers de OpenGL de verdad) -
+    // SOLO se llama desde onDrawFrame, que corre en el hilo de render de GLSurfaceView (unico hilo
+    // donde esas llamadas son validas). Copia la cola a una lista y la limpia antes de procesar, por
+    // si algun id se re-encola mientras tanto. Ids de objetos ya borrados (Undo/Redo o Delete) se
+    // descartan sin hacer nada.
+    private fun processPendingDynamicGeometryRefreshes() {
+        if (pendingDynamicGeometryRefresh.isEmpty()) return
+        val ids = pendingDynamicGeometryRefresh.toList()
+        pendingDynamicGeometryRefresh.clear()
+        for (id in ids) {
+            val obj = sceneObjects.firstOrNull { it.id == id } ?: continue
+            val mesh = obj.editableMesh ?: continue
+            val geo = dynamicGeometries.getOrPut(obj.id) { DynamicMeshGeometry() }
+            geo.update(mesh)
+        }
+    }
     /**
      * Pilas de Undo/Redo: cada entrada es una foto completa de sceneObjects (deep copy, ver
      * snapshotSceneObjects) tomada ANTES de que la accion correspondiente modifique el estado real -
@@ -66,6 +142,10 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     private val redoStack = ArrayDeque<List<SceneObject>>()
     private val MAX_UNDO_STEPS = 50
 
+    /** Limites del factor de escala libre por frame en scaleSelectedMeshElements - evita que la seleccion colapse a un punto (factor muy chico) o explote de tamano (factor muy grande) en un solo frame de arrastre rapido. */
+    private val SCALE_FACTOR_MIN = 0.01f
+    private val SCALE_FACTOR_MAX = 100f
+
     /**
      * Copia profunda de sceneObjects: SceneObject es un data class, pero rotationMatrix y
      * shapeMatrix son FloatArray (tipo referencia) - copy() por si solo comparte el mismo array de
@@ -74,7 +154,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
      * mutaria en vivo tambien el estado "actual" que se guardo antes, arruinando el historial.
      */
     private fun snapshotSceneObjects(): List<SceneObject> =
-        sceneObjects.map { it.copy(rotationMatrix = it.rotationMatrix.copyOf(), shapeMatrix = it.shapeMatrix.copyOf()) }
+        sceneObjects.map { it.copy(rotationMatrix = it.rotationMatrix.copyOf(), shapeMatrix = it.shapeMatrix.copyOf(), editableMesh = it.editableMesh?.deepCopy()) }
 
     /**
      * Guarda el estado actual de la escena en la pila de Undo - se llama SIEMPRE antes de que una
@@ -100,6 +180,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         redoStack.addLast(snapshotSceneObjects())
         sceneObjects.clear()
         sceneObjects.addAll(previous)
+        for (obj in sceneObjects) refreshDynamicGeometry(obj)
         return true
     }
 
@@ -109,6 +190,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         undoStack.addLast(snapshotSceneObjects())
         sceneObjects.clear()
         sceneObjects.addAll(next)
+        for (obj in sceneObjects) refreshDynamicGeometry(obj)
         return true
     }
 
@@ -131,6 +213,25 @@ class MyGLRenderer : GLSurfaceView.Renderer {
 
     // Which axis the camera is currently looking down: 'Z' -> ground (XY) grid, 'Y' -> XZ wall, 'X' -> YZ wall.
     @Volatile var gridPlaneAxis = 'Z'
+
+    /**
+     * true mientras la app esta en el modo Modeling (Edit Mode) - lo setea MainActivity.setMode()
+     * cada vez que se cambia de AppMode (ver esa funcion). Unica fuente de verdad usada en
+     * onDrawFrame para decidir, POR OBJETO, si dynGeo.draw() debe dibujarse con el criterio visual
+     * de Edit Mode (wireframe negro + resaltado naranja de sub-elementos, ver
+     * DynamicMeshGeometry.draw/drawBaseWireframe/drawSelectionHighlights) en vez del contorno
+     * naranja de "objeto completo" que se usa en Layout - ver charla con el usuario y su captura
+     * de referencia de Blender.
+     *
+     * A proposito NO alcanza con este flag solo: en onDrawFrame se combina con obj.selected (ver
+     * ahi) porque solo el objeto seleccionado es el que esta realmente "en edicion" (mismo
+     * criterio que editingObject() - la app solo permite editar un objeto a la vez). Sin ese AND,
+     * CUALQUIER objeto con editableMesh (aunque no sea el que se esta editando ahora) se
+     * dibujaria con wireframe negro apenas se entrara a Modeling, incluso si esta viendose de
+     * lejos sin estar seleccionado - no es el comportamiento de Blender (ahi Edit Mode es
+     * exclusivo del objeto activo).
+     */
+    @Volatile var isEditMode = false
 
     /**
      * Que gizmo de transformacion por eje se dibuja sobre el objeto seleccionado - null si ninguno.
@@ -357,9 +458,11 @@ class MyGLRenderer : GLSurfaceView.Renderer {
             posX = selected.posX + DUPLICATE_OFFSET_X,
             rotationMatrix = selected.rotationMatrix.copyOf(),
             shapeMatrix = selected.shapeMatrix.copyOf(),
+            editableMesh = selected.editableMesh?.deepCopy(),
             selected = true
         )
         sceneObjects.add(duplicate)
+        refreshDynamicGeometry(duplicate)
         return duplicate
     }
 
@@ -904,6 +1007,9 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     }
 
     override fun onDrawFrame(unused: GL10?) {
+        // Vacia la cola de refrescos de geometria dinamica pendientes (ver pendingDynamicGeometryRefresh)
+        // ANTES de dibujar - este es el unico lugar seguro para tocar OpenGL de verdad para eso (hilo de render).
+        processPendingDynamicGeometryRefreshes()
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
 
         val ratio = viewportWidth.toFloat() / viewportHeight.toFloat()
@@ -953,6 +1059,18 @@ class MyGLRenderer : GLSurfaceView.Renderer {
             Matrix.multiplyMM(modelMatrix, 0, translateMatrix, 0, obj.rotationMatrix, 0)
             Matrix.multiplyMM(shapedModelMatrix, 0, modelMatrix, 0, obj.shapeMatrix, 0)
             Matrix.multiplyMM(objMvpMatrix, 0, mvpMatrix, 0, shapedModelMatrix, 0)
+            // Si el objeto ya tiene editableMesh (entro a Edit Mode al menos una vez, ver
+            // enterEditModeForSelected), dibuja SIEMPRE con su geometria dinamica propia (ver
+            // dynamicGeometries/DynamicMeshGeometry.kt) - en Layout o en Modeling, no solo
+            // mientras esta en Edit Mode: una vez editado, ya no puede volver a compartir la
+            // geometria estatica del tipo (cubeGeometry, etc.), porque esa es la MISMA instancia
+            // que usan todos los demas cubos sin editar de la escena. NO se llama update() aca -
+            // ver comentario de dynamicGeometries sobre por que (RENDERMODE_CONTINUOUSLY).
+            val dynGeo = dynamicGeometries[obj.id]
+            if (obj.editableMesh != null && dynGeo != null) {
+                dynGeo.draw(objMvpMatrix, obj.selected, isEditMode && obj.selected)
+                continue
+            }
             when (obj.type) {
                 MeshType.CUBE -> cubeGeometry.draw(objMvpMatrix, obj.selected)
                 MeshType.PLANE -> planeGeometry.draw(objMvpMatrix, obj.selected)
@@ -1347,6 +1465,753 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     }
 
     private fun dot(a: FloatArray, b: FloatArray) = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+    /**
+     * Matriz modelo completa (traslacion + rotacion + forma) de un objeto - mismo calculo que se
+     * arma en linea en onDrawFrame para cada objeto (translateMatrix * rotationMatrix *
+     * shapeMatrix), extraido aca para que los raycast de sub-elementos (raycastVertexAt/EdgeAt/
+     * FaceAt) puedan llevar un vertice local del EditableMesh a espacio mundo sin duplicar la
+     * formula ni arriesgarse a que las dos copias se desincronicen.
+     */
+    private fun objectModelMatrix(obj: SceneObject): FloatArray {
+        val translateMatrix = FloatArray(16)
+        Matrix.setIdentityM(translateMatrix, 0)
+        Matrix.translateM(translateMatrix, 0, obj.posX, obj.posY, obj.posZ)
+        val modelMatrix = FloatArray(16)
+        Matrix.multiplyMM(modelMatrix, 0, translateMatrix, 0, obj.rotationMatrix, 0)
+        val shapedModelMatrix = FloatArray(16)
+        Matrix.multiplyMM(shapedModelMatrix, 0, modelMatrix, 0, obj.shapeMatrix, 0)
+        return shapedModelMatrix
+    }
+
+    private fun localVertexToWorld(modelMatrix: FloatArray, local: MeshVertex): FloatArray {
+        val result = FloatArray(4)
+        Matrix.multiplyMV(result, 0, modelMatrix, 0, floatArrayOf(local.x, local.y, local.z, 1f), 0)
+        return floatArrayOf(result[0], result[1], result[2])
+    }
+
+    /**
+     * Objeto actualmente en Edit Mode: el seleccionado, siempre y cuando ya tenga su EditableMesh
+     * creado (ver enterEditModeForSelected) - null si no hay objeto seleccionado o si todavia no
+     * entro a Modeling. Unica fuente de verdad usada por los 3 raycast de sub-elementos y por las
+     * funciones de seleccion masiva (selectAllMeshElements/deselectAllMeshElements/
+     * invertMeshElementSelection), para no repetir esta misma condicion varias veces.
+     */
+    private fun editingObject(): SceneObject? {
+        val selected = sceneObjects.firstOrNull { it.selected } ?: return null
+        return if (selected.editableMesh != null) selected else null
+    }
+
+    /** Radio de tolerancia (pixeles de pantalla) para tocar un vertice - mas generoso que una arista o una cara porque un vertice es un punto, el objetivo mas dificil de acertar con el dedo. */
+    private val VERTEX_PICK_RADIUS_PX = 40f
+    /** Radio de tolerancia (pixeles de pantalla) para tocar una arista - distancia punto-segmento en pantalla, ver pointToSegmentDistance2D. */
+    private val EDGE_PICK_RADIUS_PX = 28f
+
+    /**
+     * Raycast de Fase 1 (Vertex select mode): para el objeto en Edit Mode, proyecta cada vertice
+     * a pantalla (ver projectWorldToScreen) y devuelve el mas cercano al toque dentro del radio de
+     * tolerancia - distancia en PANTALLA, no en mundo, para que el tamano del objetivo no cambie
+     * con el zoom (mismo criterio de "tamano constante en pantalla" que ya usa gizmoScreenScale
+     * para el gizmo, aca aplicado al pick de vertices en vez de al dibujo). Null si no hay objeto
+     * en Edit Mode o si ningun vertice cae dentro del radio.
+     */
+    fun raycastVertexAt(screenX: Float, screenY: Float): MeshVertex? {
+        val obj = editingObject() ?: return null
+        val mesh = obj.editableMesh ?: return null
+        val model = objectModelMatrix(obj)
+        var best: MeshVertex? = null
+        var bestDist = Float.MAX_VALUE
+        for (v in mesh.vertices) {
+            val world = localVertexToWorld(model, v)
+            val screen = projectWorldToScreen(world[0], world[1], world[2]) ?: continue
+            val dx = screen[0] - screenX
+            val dy = screen[1] - screenY
+            val dist = sqrt(dx * dx + dy * dy)
+            if (dist < VERTEX_PICK_RADIUS_PX && dist < bestDist) {
+                bestDist = dist
+                best = v
+            }
+        }
+        return best
+    }
+
+    /** Distancia minima (pantalla, pixeles) entre un punto y un segmento - usada por raycastEdgeAt, mismo criterio 2D que closestDistanceRayToSegment usa en 3D para el gizmo. */
+    private fun pointToSegmentDistance2D(px: Float, py: Float, ax: Float, ay: Float, bx: Float, by: Float): Float {
+        val abx = bx - ax
+        val aby = by - ay
+        val apx = px - ax
+        val apy = py - ay
+        val abLenSq = abx * abx + aby * aby
+        val t = if (abLenSq > 1e-6f) ((apx * abx + apy * aby) / abLenSq).coerceIn(0f, 1f) else 0f
+        val cx = ax + abx * t
+        val cy = ay + aby * t
+        val dx = px - cx
+        val dy = py - cy
+        return sqrt(dx * dx + dy * dy)
+    }
+
+    /**
+     * Raycast de Fase 1 (Edge select mode): mismo criterio que raycastVertexAt pero contra los
+     * segmentos de pantalla de cada arista (distancia punto-segmento 2D, ver
+     * pointToSegmentDistance2D) en vez de puntos sueltos. Null si no hay objeto en Edit Mode o
+     * ninguna arista cae dentro del radio.
+     */
+    fun raycastEdgeAt(screenX: Float, screenY: Float): MeshEdge? {
+        val obj = editingObject() ?: return null
+        val mesh = obj.editableMesh ?: return null
+        val vertexById = mesh.vertices.associateBy { it.id }
+        val model = objectModelMatrix(obj)
+        var best: MeshEdge? = null
+        var bestDist = Float.MAX_VALUE
+        for (e in mesh.edges) {
+            val v1 = vertexById[e.v1] ?: continue
+            val v2 = vertexById[e.v2] ?: continue
+            val w1 = localVertexToWorld(model, v1)
+            val w2 = localVertexToWorld(model, v2)
+            val s1 = projectWorldToScreen(w1[0], w1[1], w1[2]) ?: continue
+            val s2 = projectWorldToScreen(w2[0], w2[1], w2[2]) ?: continue
+            val dist = pointToSegmentDistance2D(screenX, screenY, s1[0], s1[1], s2[0], s2[1])
+            if (dist < EDGE_PICK_RADIUS_PX && dist < bestDist) {
+                bestDist = dist
+                best = e
+            }
+        }
+        return best
+    }
+
+    /**
+     * Interseccion rayo-triangulo (Moller-Trumbore, formula estandar) - devuelve el parametro t a
+     * lo largo del rayo si hay hit (mas cerca = t mas chico), o null si el rayo es paralelo al
+     * triangulo o el punto de interseccion cae fuera de sus 3 lados. Usada por raycastFaceAt
+     * contra la triangulacion en abanico de cada cara (mismo criterio que DynamicMeshGeometry usa
+     * para dibujar - ver comentario ahi: fan simple desde el primer vertice, valido para cualquier
+     * n-gon convexo).
+     */
+    private fun intersectRayTriangle(orig: FloatArray, dir: FloatArray, v0: FloatArray, v1: FloatArray, v2: FloatArray): Float? {
+        val eps = 1e-6f
+        val e1 = floatArrayOf(v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2])
+        val e2 = floatArrayOf(v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2])
+        val h = cross(dir, e2)
+        val a = dot(e1, h)
+        if (abs(a) < eps) return null
+        val f = 1f / a
+        val s = floatArrayOf(orig[0] - v0[0], orig[1] - v0[1], orig[2] - v0[2])
+        val u = f * dot(s, h)
+        if (u < 0f || u > 1f) return null
+        val q = cross(s, e1)
+        val v = f * dot(dir, q)
+        if (v < 0f || u + v > 1f) return null
+        val t = f * dot(e2, q)
+        return if (t > eps) t else null
+    }
+
+    /**
+     * Raycast de Fase 1 (Face select mode): a diferencia de vertice/arista (que comparan distancia
+     * en PANTALLA), esto es un raycast 3D de verdad contra la triangulacion en abanico de cada
+     * cara (ver intersectRayTriangle) - una cara es una superficie, no un punto, asi que "tocarla"
+     * es literalmente que el rayo la atraviese, sin necesitar tolerancia. Devuelve la cara mas
+     * cercana a la camara (menor t) entre todas las que el rayo atraviesa. Null si no hay objeto en
+     * Edit Mode o el rayo no atraviesa ninguna cara.
+     */
+    fun raycastFaceAt(screenX: Float, screenY: Float): MeshFace? {
+        val obj = editingObject() ?: return null
+        val mesh = obj.editableMesh ?: return null
+        val vertexById = mesh.vertices.associateBy { it.id }
+        val model = objectModelMatrix(obj)
+        val (rayOrigin, rayDir) = screenPointToRay(screenX, screenY) ?: return null
+        var best: MeshFace? = null
+        var bestT = Float.MAX_VALUE
+        for (face in mesh.faces) {
+            val corners = face.vertexIds.mapNotNull { vertexById[it] }
+            if (corners.size < 3) continue
+            val worldCorners = corners.map { localVertexToWorld(model, it) }
+            for (i in 1 until worldCorners.size - 1) {
+                val t = intersectRayTriangle(rayOrigin, rayDir, worldCorners[0], worldCorners[i], worldCorners[i + 1])
+                if (t != null && t < bestT) {
+                    bestT = t
+                    best = face
+                }
+            }
+        }
+        return best
+    }
+
+    /**
+     * Toque en el viewport durante Edit Mode con la herramienta Select activa (ver
+     * MainActivity.onViewportTap) - deselecciona todo lo demas y selecciona SOLO el elemento
+     * tocado (seleccion simple, sin Shift/Ctrl para extender todavia - mismo criterio que
+     * selectObjectAt para objetos en Layout). Si el toque no acierta a nada, deselecciona todo
+     * (tocar espacio vacio deselecciona, igual que en Blender).
+     */
+    fun selectMeshElementAt(screenX: Float, screenY: Float, mode: EditSelectMode) {
+        val mesh = editingObject()?.editableMesh ?: return
+        when (mode) {
+            EditSelectMode.VERTEX -> {
+                val hit = raycastVertexAt(screenX, screenY)
+                for (v in mesh.vertices) v.selected = (v === hit)
+            }
+            EditSelectMode.EDGE -> {
+                val hit = raycastEdgeAt(screenX, screenY)
+                for (e in mesh.edges) e.selected = (e === hit)
+            }
+            EditSelectMode.FACE -> {
+                val hit = raycastFaceAt(screenX, screenY)
+                for (f in mesh.faces) f.selected = (f === hit)
+            }
+        }
+    }
+
+    /** Modeling > Select > All, para el tipo de sub-elemento actualmente activo (ver EditSelectMode) - no toca los otros dos tipos, mismo criterio que Blender (el modo de seleccion activo decide sobre que se opera). */
+    fun selectAllMeshElements(mode: EditSelectMode) {
+        val mesh = editingObject()?.editableMesh ?: return
+        when (mode) {
+            EditSelectMode.VERTEX -> for (v in mesh.vertices) v.selected = true
+            EditSelectMode.EDGE -> for (e in mesh.edges) e.selected = true
+            EditSelectMode.FACE -> for (f in mesh.faces) f.selected = true
+        }
+    }
+
+    /** Modeling > Select > None, mismo criterio de mode que selectAllMeshElements. */
+    fun deselectAllMeshElements(mode: EditSelectMode) {
+        val mesh = editingObject()?.editableMesh ?: return
+        when (mode) {
+            EditSelectMode.VERTEX -> for (v in mesh.vertices) v.selected = false
+            EditSelectMode.EDGE -> for (e in mesh.edges) e.selected = false
+            EditSelectMode.FACE -> for (f in mesh.faces) f.selected = false
+        }
+    }
+
+    /** Modeling > Select > Invert, mismo criterio de mode que selectAllMeshElements. */
+    fun invertMeshElementSelection(mode: EditSelectMode) {
+        val mesh = editingObject()?.editableMesh ?: return
+        when (mode) {
+            EditSelectMode.VERTEX -> for (v in mesh.vertices) v.selected = !v.selected
+            EditSelectMode.EDGE -> for (e in mesh.edges) e.selected = !e.selected
+            EditSelectMode.FACE -> for (f in mesh.faces) f.selected = !f.selected
+
+        }
+    }
+
+    /**
+     * Convierte la seleccion actual al cambiar de EditSelectMode (Vertex/Edge/Face) - mismo
+     * comportamiento que Blender real: la seleccion nunca se pierde, se "traduce" al nuevo modo
+     * en vez de borrarse (ver charla con el usuario, eligio esta opcion en vez de deseleccionar
+     * todo). No hace nada si fromMode == toMode o si no hay objeto en Edit Mode.
+     *
+     * Usa el conjunto de vertices seleccionados como denominador comun entre los 3 modos (mismo
+     * criterio que usa Blender internamente - "selection flushing"): primero se calcula QUE
+     * vertices quedan implicados por la seleccion actual (fromMode), y despues se deriva la
+     * seleccion del modo nuevo (toMode) a partir de ESE conjunto de vertices, con las mismas 2
+     * reglas en los 2 sentidos:
+     * - Una arista quedaria seleccionada si AMBOS extremos estan en el conjunto (flush hacia arriba).
+     * - Una cara quedaria seleccionada si TODOS sus vertices estan en el conjunto (flush hacia arriba).
+     * - Pasar a Vertex es directo: el conjunto ES la seleccion de vertices.
+     * Este criterio simetrico evita tener que escribir 6 casos (Vertex->Edge, Vertex->Face,
+     * Edge->Vertex, Edge->Face, Face->Vertex, Face->Edge) por separado - los 3 "de entrada" (que
+     * arman el conjunto) y los 3 "de salida" (que lo aplican) alcanzan para cubrir las 6
+     * combinaciones con la misma logica.
+     */
+    private fun verticesAffectedBySelection(mesh: EditableMesh): Set<Int> {
+        val fromVertices = mesh.vertices.filter { it.selected }.map { it.id }
+        val fromEdges = mesh.edges.filter { it.selected }.flatMap { listOf(it.v1, it.v2) }
+        val fromFaces = mesh.faces.filter { it.selected }.flatMap { it.vertexIds }
+        return (fromVertices + fromEdges + fromFaces).toSet()
+    }
+
+    fun hasSelectedMeshElements(): Boolean {
+        val mesh = editingObject()?.editableMesh ?: return false
+        return verticesAffectedBySelection(mesh).isNotEmpty()
+    }
+
+    private fun objectLinearMatrix(obj: SceneObject): FloatArray {
+        val result = FloatArray(16)
+        Matrix.multiplyMM(result, 0, obj.rotationMatrix, 0, obj.shapeMatrix, 0)
+        return result
+    }
+
+    private fun worldDeltaToLocalDelta(worldDelta: FloatArray, obj: SceneObject): FloatArray {
+        val linear = objectLinearMatrix(obj)
+        val inverse = FloatArray(16)
+        if (!Matrix.invertM(inverse, 0, linear, 0)) return floatArrayOf(0f, 0f, 0f)
+        val result = FloatArray(4)
+        Matrix.multiplyMV(result, 0, inverse, 0, floatArrayOf(worldDelta[0], worldDelta[1], worldDelta[2], 0f), 0)
+        return floatArrayOf(result[0], result[1], result[2])
+    }
+
+    fun moveSelectedMeshElements(dxScreen: Float, dyScreen: Float): Boolean {
+        val obj = editingObject() ?: return false
+        val mesh = obj.editableMesh ?: return false
+        val vertexIds = verticesAffectedBySelection(mesh)
+        if (vertexIds.isEmpty()) return false
+
+        val worldDelta = computeWorldDragDelta(dxScreen, dyScreen)
+        val localDelta = worldDeltaToLocalDelta(worldDelta, obj)
+
+        for (v in mesh.vertices) {
+            if (v.id in vertexIds) {
+                v.x += localDelta[0]
+                v.y += localDelta[1]
+                v.z += localDelta[2]
+            }
+        }
+        refreshDynamicGeometry(obj)
+        return true
+    }
+
+    /**
+     * Igual que moveSelectedMeshElements, pero proyecta el delta de mundo sobre un solo eje (X/Y/Z)
+     * antes de convertirlo a espacio local - se usa cuando el arrastre empezo tocando el gizmo de
+     * Move (ver MainActivity.onViewportDragStart, que llama a hitTestGizmoAxis en ACTION_DOWN,
+     * mismo hit-test que ya usa Object Mode).
+     *
+     * SIMPLIFICACION CONOCIDA (TODO): el gizmo se dibuja en el ORIGEN DEL OBJETO (mismo pivote que
+     * Object Mode, ver onDrawFrame), no en el punto medio de los vertices seleccionados como hace
+     * Blender real. Para primitivas simetricas centradas en su origen (caso de Cube hoy) el efecto
+     * practico es minimo, pero si mas adelante se edita una malla ya desplazada del origen, el
+     * gizmo va a aparecer en un lugar distinto de donde esta la seleccion. Arreglarlo requiere
+     * reposicionar el gizmo dibujado y su hit-test al centroide de la seleccion en vez del origen
+     * del objeto - postergado a proposito para no agrandar mas este cambio.
+     *
+     * Devuelve false (y no hace nada) si no hay objeto en Edit Mode o no hay nada seleccionado.
+     */
+    fun moveSelectedMeshElementsOnAxis(dxScreen: Float, dyScreen: Float, axis: Char): Boolean {
+        val obj = editingObject() ?: return false
+        val mesh = obj.editableMesh ?: return false
+        val vertexIds = verticesAffectedBySelection(mesh)
+        if (vertexIds.isEmpty()) return false
+
+        val worldDelta = computeWorldDragDelta(dxScreen, dyScreen)
+        val axisDir = effectiveAxisDirection(axis, obj)
+        val projected = worldDelta[0] * axisDir[0] + worldDelta[1] * axisDir[1] + worldDelta[2] * axisDir[2]
+        val worldAxisDelta = floatArrayOf(axisDir[0] * projected, axisDir[1] * projected, axisDir[2] * projected)
+        val localDelta = worldDeltaToLocalDelta(worldAxisDelta, obj)
+
+        for (v in mesh.vertices) {
+            if (v.id in vertexIds) {
+                v.x += localDelta[0]
+                v.y += localDelta[1]
+                v.z += localDelta[2]
+            }
+        }
+        refreshDynamicGeometry(obj)
+        return true
+    }
+
+    /**
+     * Centro (mundo) de los vertices actualmente afectados por la seleccion (ver
+     * verticesAffectedBySelection) - null si no hay nada seleccionado. Recalculado desde las
+     * posiciones ACTUALES en cada llamada, no cacheado al empezar el arrastre: rotar (o escalar)
+     * un conjunto de puntos alrededor de su propio centroide no mueve ese centroide (propiedad
+     * geometrica basica), asi que recalcularlo cada frame da un pivote estable sin necesidad de
+     * guardarlo aparte - a diferencia de Object Mode, donde el pivote (posicion del objeto) es
+     * ajeno a la rotacion y por eso no necesita este cuidado.
+     */
+    private fun selectionCenterWorld(obj: SceneObject, mesh: EditableMesh, vertexIds: Set<Int>): FloatArray? {
+        if (vertexIds.isEmpty()) return null
+        val model = objectModelMatrix(obj)
+        var sx = 0f; var sy = 0f; var sz = 0f
+        var count = 0
+        for (v in mesh.vertices) {
+            if (v.id in vertexIds) {
+                val w = localVertexToWorld(model, v)
+                sx += w[0]; sy += w[1]; sz += w[2]
+                count++
+            }
+        }
+        if (count == 0) return null
+        return floatArrayOf(sx / count, sy / count, sz / count)
+    }
+
+    /**
+     * Rota los vertices en vertexIds alrededor de un eje MUNDO (worldAxisDir) que pasa por el
+     * centro de la seleccion (ver selectionCenterWorld) - a diferencia de applyRotationDeltaAroundDir
+     * (Object Mode, que rota la matriz acumulada del objeto entero), esto mueve cada vertice
+     * individualmente: lo lleva a mundo, lo rota alrededor del pivote, y lo vuelve a espacio local
+     * invirtiendo la matriz completa del objeto (traslacion + rotacion + forma - ver
+     * objectModelMatrix) para que el resultado sea correcto sin importar como este transformado el
+     * objeto.
+     */
+    private fun rotateMeshVerticesAroundWorldAxis(obj: SceneObject, mesh: EditableMesh, vertexIds: Set<Int>, angleDeg: Float, worldAxisDir: FloatArray) {
+        if (angleDeg == 0f) return
+        val center = selectionCenterWorld(obj, mesh, vertexIds) ?: return
+        val model = objectModelMatrix(obj)
+        val invModel = FloatArray(16)
+        if (!Matrix.invertM(invModel, 0, model, 0)) return
+
+        val delta = FloatArray(16)
+        Matrix.setIdentityM(delta, 0)
+        Matrix.rotateM(delta, 0, angleDeg, worldAxisDir[0], worldAxisDir[1], worldAxisDir[2])
+
+        for (v in mesh.vertices) {
+            if (v.id !in vertexIds) continue
+            val world = localVertexToWorld(model, v)
+            val rel = floatArrayOf(world[0] - center[0], world[1] - center[1], world[2] - center[2], 0f)
+            val rotatedRel = FloatArray(4)
+            Matrix.multiplyMV(rotatedRel, 0, delta, 0, rel, 0)
+            val newWorld = floatArrayOf(center[0] + rotatedRel[0], center[1] + rotatedRel[1], center[2] + rotatedRel[2], 1f)
+            val newLocal = FloatArray(4)
+            Matrix.multiplyMV(newLocal, 0, invModel, 0, newWorld, 0)
+            v.x = newLocal[0]
+            v.y = newLocal[1]
+            v.z = newLocal[2]
+        }
+    }
+
+    /**
+     * Rota libre (sin eje restringido) los vertices/aristas/caras seleccionados del objeto en
+     * Edit Mode, alrededor del centro de la seleccion - mismo gesto y misma sensibilidad que
+     * rotateSelectedObject (Object Mode: dx horizontal gira alrededor de Z mundo, dy vertical
+     * alrededor de X mundo), pero con el pivote nuevo (ver selectionCenterWorld) en vez del
+     * centro del objeto. Rotate restringido a un eje (anillos del gizmo) queda pendiente, mismo
+     * criterio que Move (primero libre, despues restringido por eje).
+     *
+     * Devuelve false (y no hace nada) si no hay objeto en Edit Mode o no hay nada seleccionado.
+     */
+    fun rotateSelectedMeshElements(dxScreen: Float, dyScreen: Float): Boolean {
+        val obj = editingObject() ?: return false
+        val mesh = obj.editableMesh ?: return false
+        val vertexIds = verticesAffectedBySelection(mesh)
+        if (vertexIds.isEmpty()) return false
+
+        rotateMeshVerticesAroundWorldAxis(obj, mesh, vertexIds, dxScreen * 0.5f, axisDirection('Z'))
+        rotateMeshVerticesAroundWorldAxis(obj, mesh, vertexIds, dyScreen * 0.5f, axisDirection('X'))
+        refreshDynamicGeometry(obj)
+        return true
+    }
+
+    /**
+     * Escala libre (sin eje restringido) los vertices/aristas/caras seleccionados del objeto en
+     * Edit Mode, alrededor del centro de la seleccion (ver selectionCenterWorld) - mismo gesto y
+     * misma sensibilidad que scaleSelectedObject (Object Mode: dyScreen negativo agranda, positivo
+     * achica), pero escalando cada vertice individualmente respecto del pivote nuevo en vez de
+     * multiplicar la matriz de forma del objeto entero.
+     *
+     * A diferencia de scaleSelectedObject (que clampea via clampUniformScaleFactor, pensado para
+     * columnas de shapeMatrix), aca el factor se clampea con un limite simple y generoso
+     * (SCALE_FACTOR_MIN/MAX) sobre la distancia de cada vertice al pivote - alcanza para evitar
+     * que la seleccion colapse a un punto o escale a un tamano absurdo, sin la complejidad de medir
+     * columnas de una matriz que aca no aplica (estamos moviendo puntos sueltos, no transformando
+     * una forma via matriz).
+     *
+     * Devuelve false (y no hace nada) si no hay objeto en Edit Mode o no hay nada seleccionado.
+     */
+    /**
+     * Rota los vertices/aristas/caras seleccionados del objeto en Edit Mode, restringido a un
+     * solo eje (X/Y/Z) - se usa cuando el arrastre empezo tocando un anillo del gizmo (ver
+     * MainActivity.onViewportDragStart, que llama a hitTestGizmoRotateAxis en ACTION_DOWN, mismo
+     * hit-test que ya usa Object Mode). Mismo criterio que rotateSelectedObjectOnAxis para calcular
+     * CUANTO rotar (proyeccion del arrastre sobre la tangente en pantalla del anillo, ver
+     * computeScreenTangentForRadialDir), pero aplicando el angulo resultante con
+     * rotateMeshVerticesAroundWorldAxis (vertice por vertice, alrededor del centro de la seleccion)
+     * en vez de sobre la matriz acumulada del objeto entero.
+     *
+     * SIMPLIFICACION CONOCIDA (mismo TODO que moveSelectedMeshElementsOnAxis): el anillo se dibuja
+     * y se toca en el ORIGEN DEL OBJETO, no en el centro real de la seleccion - solo afecta el
+     * calculo de CUANTO se arrastro, no ALREDEDOR DE QUE se rota (eso ya lo maneja
+     * rotateMeshVerticesAroundWorldAxis con selectionCenterWorld).
+     *
+     * Devuelve true si el arrastre fue consumido (haya rotado algo o no).
+     */
+    fun rotateSelectedMeshElementsOnAxis(dxScreen: Float, dyScreen: Float, axis: Char): Boolean {
+        val obj = editingObject() ?: return true
+        val mesh = obj.editableMesh ?: return true
+        val vertexIds = verticesAffectedBySelection(mesh)
+        if (vertexIds.isEmpty()) return true
+
+        val center = floatArrayOf(obj.posX, obj.posY, obj.posZ)
+        val radialDir = activeRotateCurrentDir ?: activeRotateStartDir ?: return true
+        val axisDir = effectiveAxisDirection(axis, obj)
+        val screenTangent = computeScreenTangentForRadialDir(center, axisDir, radialDir) ?: return true
+
+        val delta = (dxScreen * screenTangent[0] + dyScreen * screenTangent[1]) * 0.5f
+        rotateMeshVerticesAroundWorldAxis(obj, mesh, vertexIds, delta, axisDir)
+        refreshDynamicGeometry(obj)
+        return true
+    }
+
+    /**
+     * Igual que scaleSelectedMeshElements pero restringido a un solo eje (X/Y/Z) - se usa cuando
+     * el arrastre empezo tocando el cubito de un eje del gizmo de Scale en Edit Mode (ver
+     * MainActivity.onViewportDragStart, que llama a hitTestGizmoScaleAxis en ACTION_DOWN, mismo
+     * hit-test que ya usa Object Mode). A diferencia de scaleSelectedObjectOnAxis (que deforma
+     * shapeMatrix), aca se escala cada vertice individualmente: se descompone su posicion relativa
+     * al centro de la seleccion en (componente a lo largo del eje) + (resto), y solo la componente
+     * a lo largo del eje se multiplica por el factor - el resto queda igual, dando un escalado
+     * real de un solo eje sobre la geometria (no un shear).
+     *
+     * Devuelve false (y no hace nada) si no hay objeto en Edit Mode o no hay nada seleccionado.
+     */
+    fun scaleSelectedMeshElementsOnAxis(dxScreen: Float, dyScreen: Float, axis: Char): Boolean {
+        val obj = editingObject() ?: return false
+        val mesh = obj.editableMesh ?: return false
+        val vertexIds = verticesAffectedBySelection(mesh)
+        if (vertexIds.isEmpty()) return false
+        val center = selectionCenterWorld(obj, mesh, vertexIds) ?: return false
+
+        val dragAmount = projectDragOntoAxisScreenDir(dxScreen, dyScreen, axis, obj)
+        val rawFactor = 1f + dragAmount * 0.005f
+        val factor = rawFactor.coerceIn(SCALE_FACTOR_MIN, SCALE_FACTOR_MAX)
+        val axisDir = effectiveAxisDirection(axis, obj)
+
+        val model = objectModelMatrix(obj)
+        val invModel = FloatArray(16)
+        if (!Matrix.invertM(invModel, 0, model, 0)) return false
+
+        for (v in mesh.vertices) {
+            if (v.id !in vertexIds) continue
+            val world = localVertexToWorld(model, v)
+            val rel = floatArrayOf(world[0] - center[0], world[1] - center[1], world[2] - center[2])
+            val proj = rel[0] * axisDir[0] + rel[1] * axisDir[1] + rel[2] * axisDir[2]
+            val extra = (factor - 1f) * proj
+            val newWorld = floatArrayOf(
+                world[0] + axisDir[0] * extra,
+                world[1] + axisDir[1] * extra,
+                world[2] + axisDir[2] * extra,
+                1f
+            )
+            val newLocal = FloatArray(4)
+            Matrix.multiplyMV(newLocal, 0, invModel, 0, newWorld, 0)
+            v.x = newLocal[0]
+            v.y = newLocal[1]
+            v.z = newLocal[2]
+        }
+        refreshDynamicGeometry(obj)
+        return true
+    }
+
+    fun scaleSelectedMeshElements(dyScreen: Float): Boolean {
+        val obj = editingObject() ?: return false
+        val mesh = obj.editableMesh ?: return false
+        val vertexIds = verticesAffectedBySelection(mesh)
+        if (vertexIds.isEmpty()) return false
+        val center = selectionCenterWorld(obj, mesh, vertexIds) ?: return false
+
+        val rawFactor = 1f - dyScreen * 0.005f
+        val factor = rawFactor.coerceIn(SCALE_FACTOR_MIN, SCALE_FACTOR_MAX)
+
+        val model = objectModelMatrix(obj)
+        val invModel = FloatArray(16)
+        if (!Matrix.invertM(invModel, 0, model, 0)) return false
+
+        for (v in mesh.vertices) {
+            if (v.id !in vertexIds) continue
+            val world = localVertexToWorld(model, v)
+            val newWorld = floatArrayOf(
+                center[0] + (world[0] - center[0]) * factor,
+                center[1] + (world[1] - center[1]) * factor,
+                center[2] + (world[2] - center[2]) * factor,
+                1f
+            )
+            val newLocal = FloatArray(4)
+            Matrix.multiplyMV(newLocal, 0, invModel, 0, newWorld, 0)
+            v.x = newLocal[0]
+            v.y = newLocal[1]
+            v.z = newLocal[2]
+        }
+        refreshDynamicGeometry(obj)
+        return true
+    }
+
+    /**
+     * Modeling > Extrude Region (Fase 3 del plan de Edit Mode, ver charla con el supervisor):
+     * extruye las caras actualmente seleccionadas - las duplica (nuevos vertices en la MISMA
+     * posicion que los originales, arrancan superpuestos, listos para "tirar" con el Move que se
+     * dispara automaticamente despues, ver MainActivity.onExtrudeRegionClicked - mismo flujo que
+     * E seguido de G implicito en Blender), reasigna las caras seleccionadas para que usen los
+     * vertices nuevos (son ellas las que quedan "paradas" en el aire, listas para moverse) y
+     * cierra el hueco con caras laterales nuevas en cada arista de BORDE de la seleccion (arista
+     * usada por exactamente UNA cara seleccionada - si la comparten dos caras seleccionadas, es
+     * interna a la region y no necesita pared, ver edgeUsage).
+     *
+     * Al terminar, la seleccion queda SOLO sobre la geometria nueva (vertices duplicados, aristas
+     * del "techo" y las caras extruidas) - vertices/aristas viejos y las paredes nuevas quedan sin
+     * seleccionar, igual que en Blender. Devuelve false (sin hacer nada) si no hay objeto en Edit
+     * Mode o no hay ninguna cara seleccionada - el llamador (MainActivity) usa esto para avisar
+     * con un Toast, mismo criterio que deleteSelectedObject/duplicateSelectedObject.
+     *
+     * LIMITACION CONOCIDA (TODO): si la region seleccionada no tiene ningun borde abierto (por
+     * ejemplo, seleccionar TODAS las caras de un objeto cerrado), los vertices originales de esa
+     * region quedan sin ninguna cara/arista que los referencie (huerfanos, se ven como puntos
+     * sueltos flotando en el wireframe) - caso raro en el uso tipico (extruir una sola cara o un
+     * grupo chico con borde abierto), documentado para revisar mas adelante si hace falta.
+     */
+    /**
+     * Modeling > Mesh > Delete (Fase 4 del plan de Edit Mode, ver charla con el supervisor):
+     * borra la geometria actualmente seleccionada, segun el modo de sub-elemento activo (mode) -
+     * mismo criterio que selectAllMeshElements/deselectAllMeshElements/invertMeshElementSelection
+     * (el modo activo decide sobre que se opera).
+     *
+     * Regla base (Vertex mode): borrar un vertice se lleva puesto TODO lo que dependa de el - sus
+     * aristas y sus caras, para no dejar geometria "colgada" apuntando a un vertice que ya no
+     * existe (referencia rota). Edge mode sigue la misma logica un nivel mas arriba: borrar una
+     * arista se lleva puesta cualquier cara que la use en su contorno (busca el par de vertices
+     * consecutivo en el loop de cada cara, no solo si ambos vertices aparecen sueltos - una cara
+     * puede tener los 2 vertices de una arista sin que esa arista sea parte de su borde). Face
+     * mode es el mas simple: borra SOLO las caras, deja vertices y aristas como estan (mismo
+     * comportamiento que "Delete Faces" en Blender - puede dejar geometria huerfana a proposito,
+     * el usuario decide si tambien la quiere borrar).
+     *
+     * Devuelve false (sin hacer nada) si no hay objeto en Edit Mode o no hay nada seleccionado en
+     * el modo activo - el llamador (MainActivity) usa esto para avisar con un Toast, mismo
+     * criterio que deleteSelectedObject/duplicateSelectedObject.
+     */
+    fun deleteSelectedMeshElements(mode: EditSelectMode): Boolean {
+        val obj = editingObject() ?: return false
+        val mesh = obj.editableMesh ?: return false
+
+        val removedVertexIds: Set<Int>
+        val removedEdgeIds = mutableSetOf<Int>()
+        val removedFaceIds = mutableSetOf<Int>()
+
+        when (mode) {
+            EditSelectMode.VERTEX -> {
+                removedVertexIds = mesh.vertices.filter { it.selected }.map { it.id }.toSet()
+                if (removedVertexIds.isEmpty()) return false
+                for (e in mesh.edges) if (e.v1 in removedVertexIds || e.v2 in removedVertexIds) removedEdgeIds.add(e.id)
+                for (f in mesh.faces) if (f.vertexIds.any { it in removedVertexIds }) removedFaceIds.add(f.id)
+            }
+            EditSelectMode.EDGE -> {
+                val selectedEdges = mesh.edges.filter { it.selected }
+                if (selectedEdges.isEmpty()) return false
+                removedVertexIds = emptySet()
+                removedEdgeIds.addAll(selectedEdges.map { it.id })
+                for (f in mesh.faces) {
+                    val ids = f.vertexIds
+                    for (i in ids.indices) {
+                        val a = ids[i]
+                        val b = ids[(i + 1) % ids.size]
+                        if (selectedEdges.any { (it.v1 == a && it.v2 == b) || (it.v1 == b && it.v2 == a) }) {
+                            removedFaceIds.add(f.id)
+                            break
+                        }
+                    }
+                }
+            }
+            EditSelectMode.FACE -> {
+                val selectedFaces = mesh.faces.filter { it.selected }
+                if (selectedFaces.isEmpty()) return false
+                removedVertexIds = emptySet()
+                removedFaceIds.addAll(selectedFaces.map { it.id })
+            }
+        }
+
+        pushUndoSnapshot()
+
+        mesh.faces.removeAll { it.id in removedFaceIds }
+        mesh.edges.removeAll { it.id in removedEdgeIds }
+        mesh.vertices.removeAll { it.id in removedVertexIds }
+
+        refreshDynamicGeometry(obj)
+        return true
+    }
+
+    fun extrudeSelectedFaces(): Boolean {
+        val obj = editingObject() ?: return false
+        val mesh = obj.editableMesh ?: return false
+        val selectedFaces = mesh.faces.filter { it.selected }
+        if (selectedFaces.isEmpty()) return false
+
+        pushUndoSnapshot()
+
+        data class BoundaryEdge(val a: Int, val b: Int)
+        val edgeUsage = mutableMapOf<Pair<Int, Int>, Int>()
+        val firstOrder = mutableMapOf<Pair<Int, Int>, BoundaryEdge>()
+        for (face in selectedFaces) {
+            val ids = face.vertexIds
+            for (i in ids.indices) {
+                val a = ids[i]
+                val b = ids[(i + 1) % ids.size]
+                val key = if (a < b) a to b else b to a
+                edgeUsage[key] = (edgeUsage[key] ?: 0) + 1
+                firstOrder.getOrPut(key) { BoundaryEdge(a, b) }
+            }
+        }
+        val boundaryEdges = edgeUsage.filterValues { it == 1 }.keys.map { firstOrder.getValue(it) }
+
+        val regionVertexIds = selectedFaces.flatMap { it.vertexIds }.toSet()
+        val vertexById = mesh.vertices.associateBy { it.id }
+        var nextVertexId = (mesh.vertices.maxOfOrNull { it.id } ?: -1) + 1
+        var nextEdgeId = (mesh.edges.maxOfOrNull { it.id } ?: -1) + 1
+        var nextFaceId = (mesh.faces.maxOfOrNull { it.id } ?: -1) + 1
+
+        for (v in mesh.vertices) v.selected = false
+        for (e in mesh.edges) e.selected = false
+        for (f in mesh.faces) f.selected = false
+
+        val vertexRemap = mutableMapOf<Int, Int>()
+        for (oldId in regionVertexIds) {
+            val old = vertexById[oldId] ?: continue
+            val newId = nextVertexId++
+            mesh.vertices.add(MeshVertex(newId, old.x, old.y, old.z, selected = true))
+            vertexRemap[oldId] = newId
+        }
+
+        for (boundary in boundaryEdges) {
+            val aNew = vertexRemap[boundary.a] ?: continue
+            val bNew = vertexRemap[boundary.b] ?: continue
+            mesh.faces.add(MeshFace(nextFaceId++, listOf(boundary.a, boundary.b, bNew, aNew), selected = false))
+        }
+
+        val railCreated = mutableSetOf<Int>()
+        for (boundary in boundaryEdges) {
+            for (oldId in listOf(boundary.a, boundary.b)) {
+                if (oldId in railCreated) continue
+                val newId = vertexRemap[oldId] ?: continue
+                mesh.edges.add(MeshEdge(nextEdgeId++, oldId, newId, selected = false))
+                railCreated.add(oldId)
+            }
+        }
+
+        val capEdgeCreated = mutableSetOf<Pair<Int, Int>>()
+        for (face in selectedFaces) {
+            val ids = face.vertexIds
+            for (i in ids.indices) {
+                val a = vertexRemap[ids[i]] ?: continue
+                val b = vertexRemap[ids[(i + 1) % ids.size]] ?: continue
+                val key = if (a < b) a to b else b to a
+                if (key in capEdgeCreated) continue
+                mesh.edges.add(MeshEdge(nextEdgeId++, a, b, selected = true))
+                capEdgeCreated.add(key)
+            }
+        }
+
+        for (face in selectedFaces) {
+            val remappedIds = face.vertexIds.map { vertexRemap[it] ?: it }
+            val index = mesh.faces.indexOfFirst { it.id == face.id }
+            if (index != -1) {
+                mesh.faces[index] = MeshFace(face.id, remappedIds, selected = true)
+            }
+        }
+
+        refreshDynamicGeometry(obj)
+        return true
+    }
+
+    fun convertSelectionOnModeChange(fromMode: EditSelectMode, toMode: EditSelectMode) {
+
+
+
+
+
+        if (fromMode == toMode) return
+        val mesh = editingObject()?.editableMesh ?: return
+
+        val selectedVertexIds: Set<Int> = when (fromMode) {
+            EditSelectMode.VERTEX -> mesh.vertices.filter { it.selected }.map { it.id }.toSet()
+            EditSelectMode.EDGE -> mesh.edges.filter { it.selected }.flatMap { listOf(it.v1, it.v2) }.toSet()
+            EditSelectMode.FACE -> mesh.faces.filter { it.selected }.flatMap { it.vertexIds }.toSet()
+        }
+
+        for (v in mesh.vertices) v.selected = false
+        for (e in mesh.edges) e.selected = false
+        for (f in mesh.faces) f.selected = false
+
+        when (toMode) {
+            EditSelectMode.VERTEX -> for (v in mesh.vertices) v.selected = v.id in selectedVertexIds
+            EditSelectMode.EDGE -> for (e in mesh.edges) e.selected = e.v1 in selectedVertexIds && e.v2 in selectedVertexIds
+            EditSelectMode.FACE -> for (f in mesh.faces) f.selected = f.vertexIds.isNotEmpty() && f.vertexIds.all { it in selectedVertexIds }
+        }
+    }
 
     /**
      * Interseccion rayo-caja axis-aligned (metodo slab), caja de medio-lado 0.5*largoColumna por
