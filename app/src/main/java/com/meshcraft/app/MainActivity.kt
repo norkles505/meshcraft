@@ -70,6 +70,9 @@ class MainActivity : Activity() {
     private lateinit var edgeModeBtn: ImageView
     private lateinit var faceModeBtn: ImageView
     private var currentEditSelectMode: EditSelectMode = EditSelectMode.VERTEX
+    private lateinit var extendSelectBtn: ImageView
+    /** Ver toggleExtendSelect() para el comportamiento completo (Paso 3 del roadmap - multi-seleccion). */
+    private var extendSelectEnabled: Boolean = false
 
     /**
      * Eje al que quedo restringido el arrastre actual (X/Y/Z), si empezo tocando el gizmo (ver
@@ -78,6 +81,26 @@ class MainActivity : Activity() {
      * hitTestGizmoScaleAxis) activos.
      */
     private var axisLocked: Char? = null
+
+    /**
+     * Box Select (Modeling > Select > Box Select, ver armBoxSelect): boxSelectActive queda en true
+     * mientras la herramienta esta "armada" (esperando el primer arrastre) hasta boxSelectDragging
+     * queda en true SOLO durante el gesto de arrastre en si (ACTION_DOWN a ACTION_UP) - se usa para
+     * distinguir en onViewportDragMove/End si el gesto actual es de Box Select o el normal de
+     * Move/Rotate/Scale. Un solo arrastre alcanza (simplificacion deliberada: a diferencia de
+     * Blender, donde B queda armado hasta Escape/otra herramienta, aca se desarma solo despues de
+     * completar un rectangulo - mismo criterio "de un solo toque" que ya usan Extrude Region y el
+     * resto de las herramientas "extra" de Modeling).
+     */
+    private var boxSelectActive: Boolean = false
+    private var boxSelectDragging: Boolean = false
+    private var boxSelectStartX: Float = 0f
+    private var boxSelectStartY: Float = 0f
+    private var boxSelectCurrentX: Float = 0f
+    private var boxSelectCurrentY: Float = 0f
+    /** Evita que el ACTION_UP que cierra un Box Select tambien dispare un tap normal (ver MyGLSurfaceView: onDragEnd y onTap se llaman los dos en el mismo ACTION_UP). */
+    private var suppressNextTap: Boolean = false
+    private lateinit var boxSelectOverlay: BoxSelectOverlayView
 
     private var modeMenuPopup: PopupWindow? = null
 
@@ -345,6 +368,7 @@ class MainActivity : Activity() {
         glView = MyGLSurfaceView(this)
         gizmoView = GizmoView(this)
         gizmoLabelView = GizmoLabelView(this)
+        boxSelectOverlay = BoxSelectOverlayView(this)
 
         gizmoView.angleXProvider = { glView.renderer.angleX }
         gizmoView.angleYProvider = { glView.renderer.angleY }
@@ -366,6 +390,7 @@ class MainActivity : Activity() {
 
         val density = resources.displayMetrics.density
         root.addView(gizmoLabelView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        root.addView(boxSelectOverlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         val gizmoSize = (68 * density).toInt()
         val margin = (16 * density).toInt()
         val gizmoParams = FrameLayout.LayoutParams(gizmoSize, gizmoSize)
@@ -747,7 +772,8 @@ class MainActivity : Activity() {
         addModelingSelectActionRow(menuColumn, popup, "None")
         addModelingSelectActionRow(menuColumn, popup, "Invert")
         menuColumn.addView(buildSimpleMenuRow("Box Select") {
-            renderModelingSelectSubmenu(menuColumn, popup, selectModeSubmenuItems)
+            popup.dismiss()
+            armBoxSelect()
         })
         menuColumn.addView(buildSimpleMenuRow("Circle Select") {
             renderModelingSelectSubmenu(menuColumn, popup, selectModeSubmenuItems)
@@ -1377,6 +1403,29 @@ class MainActivity : Activity() {
             if (!deleted) Toast.makeText(this, "Selecciona algo para borrar", Toast.LENGTH_SHORT).show()
             return
         }
+        // Modeling > Mesh > Merge (At Center, ver MyGLRenderer.mergeSelectedVertices): mismo
+        // patron que Delete arriba (unica accion real de este menu por ahora, junto con Delete).
+        // Funciona sin importar el EditSelectMode activo (Vertex/Edge/Face), ya que
+        // mergeSelectedVertices usa verticesAffectedBySelection para juntar los vertices
+        // implicados por lo que este seleccionado, sea vertices, aristas o caras.
+        if (action == "Merge") {
+            val merged = glView.renderer.mergeSelectedVertices()
+            glView.requestRender()
+            if (!merged) Toast.makeText(this, "Selecciona al menos 2 vertices para fusionar", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (action == "Bevel" || action == "Bevel Vertices") {
+            val beveled = glView.renderer.bevelSelectedVertices()
+            glView.requestRender()
+            if (!beveled) Toast.makeText(this, "Selecciona al menos un vertice para biselar", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (action == "Subdivide") {
+            val subdivided = glView.renderer.subdivideSelected()
+            glView.requestRender()
+            if (!subdivided) Toast.makeText(this, "Selecciona al menos una arista para subdividir", Toast.LENGTH_SHORT).show()
+            return
+        }
         // TODO: conectar a la logica real de edicion de malla una vez que exista el modelo editable (Edit Mode).
         Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
     }
@@ -1592,6 +1641,23 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Arma Box Select (Modeling > Select > Box Select): fuerza la herramienta Select (para que
+     * el proximo arrastre en el viewport no quede interceptado por Move/Rotate/Scale, ver
+     * setModelingTool) y prende boxSelectActive - el primer arrastre que siga (ver
+     * onViewportDragStart/Move/End) dibuja el rectangulo y selecciona lo que quede adentro,
+     * despues se desarma solo (ver comentario de boxSelectActive). Reusa el mismo toggle
+     * extendSelectEnabled que ya existe para el tap individual (ver toggleExtendSelect) en vez de
+     * los 5 sub-modos de Blender (Set/Extend/Subtract/Difference/Intersect) - simplificacion
+     * deliberada, documentada en selectModeSubmenuItems.
+     */
+    private fun armBoxSelect() {
+        if (currentMode != AppMode.MODELING) return
+        setModelingTool(LayoutTool.SELECT)
+        boxSelectActive = true
+        Toast.makeText(this, "Arrastrá para seleccionar por caja", Toast.LENGTH_SHORT).show()
+    }
+
     /** Herramienta "de un solo toque" (Extrude Region, Bevel, etc.) - queda resaltada hasta elegir otra. */
     private fun setModelingExtraTool(label: String) {
         currentModelingExtraTool = label
@@ -1630,6 +1696,8 @@ class MainActivity : Activity() {
         vertexModeBtn.setOnClickListener { setEditSelectMode(EditSelectMode.VERTEX) }
         edgeModeBtn.setOnClickListener { setEditSelectMode(EditSelectMode.EDGE) }
         faceModeBtn.setOnClickListener { setEditSelectMode(EditSelectMode.FACE) }
+        extendSelectBtn = createIconButton(R.drawable.ic_select_extend)
+        extendSelectBtn.setOnClickListener { toggleExtendSelect() }
 
         val spacing = (8 * density).toInt()
         for (btn in listOf(vertexModeBtn, edgeModeBtn, faceModeBtn)) {
@@ -1637,6 +1705,9 @@ class MainActivity : Activity() {
             row.addView(btn)
         }
         (vertexModeBtn.layoutParams as LinearLayout.LayoutParams).leftMargin = 0
+        (extendSelectBtn.layoutParams as LinearLayout.LayoutParams).leftMargin = spacing * 2
+        row.addView(extendSelectBtn)
+        updateExtendSelectHighlight()
 
         updateEditSelectModeHighlight()
         return row
@@ -1662,6 +1733,26 @@ class MainActivity : Activity() {
         vertexModeBtn.background = circleBackground(currentEditSelectMode == EditSelectMode.VERTEX)
         edgeModeBtn.background = circleBackground(currentEditSelectMode == EditSelectMode.EDGE)
         faceModeBtn.background = circleBackground(currentEditSelectMode == EditSelectMode.FACE)
+    }
+
+    /**
+     * Multi-seleccion real (Paso 3 del roadmap, ver charla con el supervisor): toggle que cambia
+     * el comportamiento del tap en Modeling con Select activo - apagado (default): tocar un
+     * elemento selecciona SOLO ese elemento, deselecciona el resto (mismo comportamiento de
+     * siempre, ver MyGLRenderer.selectMeshElementAt con extend=false). Prendido: tocar un
+     * elemento AGREGA o QUITA ese elemento de la seleccion actual sin tocar el resto (toggle
+     * individual, ver selectMeshElementAt con extend=true) - mismo criterio que Shift+click en
+     * Blender. Visible siempre en Modeling (vive en editSelectModeRow, mismo criterio de
+     * visibilidad que Vertex/Edge/Face) ya que afecta a la proxima vez que se use Select,
+     * independientemente de la herramienta activa ahora mismo.
+     */
+    private fun toggleExtendSelect() {
+        extendSelectEnabled = !extendSelectEnabled
+        updateExtendSelectHighlight()
+    }
+
+    private fun updateExtendSelectHighlight() {
+        extendSelectBtn.background = circleBackground(extendSelectEnabled)
     }
 
     private fun setLayoutTool(tool: LayoutTool) {
@@ -1703,6 +1794,15 @@ class MainActivity : Activity() {
      * onViewportDragMove); si no, cae al gesto libre de siempre.
      */
     private fun onViewportDragStart(x: Float, y: Float) {
+        if (boxSelectActive) {
+            boxSelectDragging = true
+            boxSelectStartX = x
+            boxSelectStartY = y
+            boxSelectCurrentX = x
+            boxSelectCurrentY = y
+            boxSelectOverlay.setRect(x, y, x, y)
+            return
+        }
         axisLocked = null
         if (currentMode == AppMode.MODELING) {
             if (currentModelingTool == LayoutTool.MOVE && glView.renderer.hasSelectedMeshElements()) {
@@ -1763,6 +1863,22 @@ class MainActivity : Activity() {
     }
     /** ACTION_UP en el viewport: suelta el eje bloqueado, sea cual sea la herramienta activa - tambien limpia el resaltado del eje agarrado (activeRotateAxis/activeMoveAxis/activeScaleAxis) y la etiqueta de texto, si habia una transformacion restringida en curso. */
     private fun onViewportDragEnd() {
+        if (boxSelectDragging) {
+            boxSelectDragging = false
+            boxSelectActive = false
+            boxSelectOverlay.clear()
+            suppressNextTap = true
+            glView.renderer.selectMeshElementsInBox(
+                minOf(boxSelectStartX, boxSelectCurrentX),
+                minOf(boxSelectStartY, boxSelectCurrentY),
+                maxOf(boxSelectStartX, boxSelectCurrentX),
+                maxOf(boxSelectStartY, boxSelectCurrentY),
+                currentEditSelectMode,
+                extendSelectEnabled
+            )
+            glView.requestRender()
+            return
+        }
         axisLocked = null
         glView.renderer.activeRotateAxis = null
         glView.renderer.activeMoveAxis = null
@@ -1778,9 +1894,13 @@ class MainActivity : Activity() {
      * onViewportDragMove).
      */
     private fun onViewportTap(x: Float, y: Float) {
+        if (suppressNextTap) {
+            suppressNextTap = false
+            return
+        }
         if (currentMode == AppMode.MODELING) {
             if (currentModelingTool == LayoutTool.SELECT) {
-                glView.renderer.selectMeshElementAt(x, y, currentEditSelectMode)
+                glView.renderer.selectMeshElementAt(x, y, currentEditSelectMode, extendSelectEnabled)
                 glView.requestRender()
             }
             return
@@ -1814,6 +1934,12 @@ class MainActivity : Activity() {
      * (arrastre consumido) siempre que una de las tres este activa, se haya transformado algo o no.
      */
     private fun onViewportDragMove(dx: Float, dy: Float, x: Float, y: Float): Boolean {
+        if (boxSelectDragging) {
+            boxSelectCurrentX = x
+            boxSelectCurrentY = y
+            boxSelectOverlay.setRect(boxSelectStartX, boxSelectStartY, x, y)
+            return true
+        }
         if (currentMode == AppMode.MODELING) {
             if (currentModelingTool == LayoutTool.MOVE) {
                 val axis = axisLocked

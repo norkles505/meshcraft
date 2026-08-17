@@ -437,6 +437,9 @@ class MyGLRenderer : GLSurfaceView.Renderer {
      * lado en las primitivas base) para que se note claramente que hay dos objetos separados.
      */
     private val DUPLICATE_OFFSET_X = 0.6f
+    /** Distancia (unidades de mundo) a la que se corta cada arista incidente al biselar un vertice (ver bevelSelectedVertices) - fraccion fija del largo de esa arista, no un valor absoluto (ver clamp con coerceAtMost mas abajo). */
+    private val BEVEL_AMOUNT = 0.15f
+
 
     /**
      * Duplica el objeto seleccionado (Object > Duplicate Objects): mismo tipo, misma rotacion y
@@ -746,11 +749,11 @@ class MyGLRenderer : GLSurfaceView.Renderer {
     fun computeRotateLabelAnchor(): FloatArray? {
         val selected = sceneObjects.firstOrNull { it.selected } ?: return null
         val dir = activeRotateStartDir ?: return null
-        val ringWorldRadius = gizmoScreenScale * Gizmo3D.RING_RADIUS * 1.15f
+        val pivot = gizmoPivotWorld(selected); val ringWorldRadius = gizmoScreenScale * Gizmo3D.RING_RADIUS * 1.15f
         return projectWorldToScreen(
-            selected.posX + dir[0] * ringWorldRadius,
-            selected.posY + dir[1] * ringWorldRadius,
-            selected.posZ + dir[2] * ringWorldRadius
+            pivot[0] + dir[0] * ringWorldRadius,
+            pivot[1] + dir[1] * ringWorldRadius,
+            pivot[2] + dir[2] * ringWorldRadius
         )
     }
 
@@ -1097,9 +1100,10 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         if (mode != null) {
             val selectedObj = sceneObjects.firstOrNull { it.selected }
             if (selectedObj != null) {
+                val gizmoPivot = gizmoPivotWorld(selectedObj)
                 val gizmoModel = FloatArray(16)
                 Matrix.setIdentityM(gizmoModel, 0)
-                Matrix.translateM(gizmoModel, 0, selectedObj.posX, selectedObj.posY, selectedObj.posZ)
+                Matrix.translateM(gizmoModel, 0, gizmoPivot[0], gizmoPivot[1], gizmoPivot[2])
                 // LOCAL: el gizmo rota junto con el objeto, para que lo que ves coincida siempre
                 // con lo que va a pasar al arrastrar (ver comentario del enum TransformOrientation
                 // sobre el trade-off con GLOBAL). GLOBAL: se deja el gizmo sin rotar (comportamiento
@@ -1144,7 +1148,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
 
                     val translatePart = FloatArray(16)
                     Matrix.setIdentityM(translatePart, 0)
-                    Matrix.translateM(translatePart, 0, selectedObj.posX, selectedObj.posY, selectedObj.posZ)
+                    Matrix.translateM(translatePart, 0, gizmoPivot[0], gizmoPivot[1], gizmoPivot[2])
 
                     val trackballModel = FloatArray(16)
                     Matrix.multiplyMM(trackballModel, 0, translatePart, 0, inverseOrbit, 0)
@@ -1164,6 +1168,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
                 // gesto (antes del primer move) o en el caso degenerado de que
                 // updateActiveRotateCurrentDir no haya podido calcular una direccion ese frame.
                 if (mode == GizmoMode.ROTATE && activeRotateAxis != null) {
+                    // (pivot fix aplicado abajo via mutacion de center/segStart, ver hitTestGizmoRotateAxis)
                     val axisChar = activeRotateAxis!!
                     val axisColor = gizmo.colorForAxis(axisChar)
 
@@ -1307,7 +1312,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         // no hay numeros duplicados a mano entre dibujo y hit-test.
         val segStart = floatArrayOf(selected.posX, selected.posY, selected.posZ)
         // (ver companion object de Gizmo3D, arriba, para SHAFT_LENGTH/TIP_LENGTH)
-        val axisLength = gizmoScreenScale * (Gizmo3D.SHAFT_LENGTH + Gizmo3D.TIP_LENGTH)
+        val __pivMove = gizmoPivotWorld(selected); segStart[0] = __pivMove[0]; segStart[1] = __pivMove[1]; segStart[2] = __pivMove[2]; val axisLength = gizmoScreenScale * (Gizmo3D.SHAFT_LENGTH + Gizmo3D.TIP_LENGTH)
         val hitRadius = gizmoScreenScale * 0.18f
 
         var bestAxis: Char? = null
@@ -1338,7 +1343,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         val (rayOrigin, rayDir) = screenPointToRay(screenX, screenY) ?: return null
 
         val segStart = floatArrayOf(selected.posX, selected.posY, selected.posZ)
-        val axisLength = gizmoScreenScale * (Gizmo3D.SHAFT_LENGTH + Gizmo3D.SCALE_BOX_HALF_SIZE)
+        val __pivScale = gizmoPivotWorld(selected); segStart[0] = __pivScale[0]; segStart[1] = __pivScale[1]; segStart[2] = __pivScale[2]; val axisLength = gizmoScreenScale * (Gizmo3D.SHAFT_LENGTH + Gizmo3D.SCALE_BOX_HALF_SIZE)
         val hitRadius = gizmoScreenScale * 0.18f
 
         var bestAxis: Char? = null
@@ -1371,7 +1376,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         val (rayOrigin, rayDir) = screenPointToRay(screenX, screenY) ?: return null
 
         val center = floatArrayOf(selected.posX, selected.posY, selected.posZ)
-        val ringRadius = gizmoScreenScale * Gizmo3D.RING_RADIUS
+        val __pivRotHit = gizmoPivotWorld(selected); center[0] = __pivRotHit[0]; center[1] = __pivRotHit[1]; center[2] = __pivRotHit[2]; val ringRadius = gizmoScreenScale * Gizmo3D.RING_RADIUS
         val tolerance = gizmoScreenScale * 0.15f
 
         var bestAxis: Char? = null
@@ -1419,7 +1424,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         val selected = sceneObjects.firstOrNull { it.selected } ?: return
         val (rayOrigin, rayDir) = screenPointToRay(screenX, screenY) ?: return
         val center = floatArrayOf(selected.posX, selected.posY, selected.posZ)
-        val normal = effectiveAxisDirection(axis, selected)
+        val __pivRotDrag = gizmoPivotWorld(selected); center[0] = __pivRotDrag[0]; center[1] = __pivRotDrag[1]; center[2] = __pivRotDrag[2]; val normal = effectiveAxisDirection(axis, selected)
         val denom = dot(rayDir, normal)
         if (abs(denom) < 1e-6f) return
         val diff = floatArrayOf(center[0] - rayOrigin[0], center[1] - rayOrigin[1], center[2] - rayOrigin[2])
@@ -1638,25 +1643,38 @@ class MyGLRenderer : GLSurfaceView.Renderer {
 
     /**
      * Toque en el viewport durante Edit Mode con la herramienta Select activa (ver
-     * MainActivity.onViewportTap) - deselecciona todo lo demas y selecciona SOLO el elemento
-     * tocado (seleccion simple, sin Shift/Ctrl para extender todavia - mismo criterio que
-     * selectObjectAt para objetos en Layout). Si el toque no acierta a nada, deselecciona todo
-     * (tocar espacio vacio deselecciona, igual que en Blender).
+     * MainActivity.onViewportTap y MainActivity.toggleExtendSelect). Sin extender (extend=false,
+     * default): deselecciona todo lo demas y selecciona SOLO el elemento tocado. Extendiendo
+     * (extend=true): AGREGA o QUITA el elemento tocado de la seleccion actual sin tocar el resto
+     * (toggle individual, mismo criterio que Shift+click en Blender) - tocar espacio vacio en este
+     * modo no hace nada, para no perder la seleccion que se esta construyendo.
      */
-    fun selectMeshElementAt(screenX: Float, screenY: Float, mode: EditSelectMode) {
+    fun selectMeshElementAt(screenX: Float, screenY: Float, mode: EditSelectMode, extend: Boolean = false) {
         val mesh = editingObject()?.editableMesh ?: return
         when (mode) {
             EditSelectMode.VERTEX -> {
                 val hit = raycastVertexAt(screenX, screenY)
-                for (v in mesh.vertices) v.selected = (v === hit)
+                if (extend) {
+                    if (hit != null) hit.selected = !hit.selected
+                } else {
+                    for (v in mesh.vertices) v.selected = (v === hit)
+                }
             }
             EditSelectMode.EDGE -> {
                 val hit = raycastEdgeAt(screenX, screenY)
-                for (e in mesh.edges) e.selected = (e === hit)
+                if (extend) {
+                    if (hit != null) hit.selected = !hit.selected
+                } else {
+                    for (e in mesh.edges) e.selected = (e === hit)
+                }
             }
             EditSelectMode.FACE -> {
                 val hit = raycastFaceAt(screenX, screenY)
-                for (f in mesh.faces) f.selected = (f === hit)
+                if (extend) {
+                    if (hit != null) hit.selected = !hit.selected
+                } else {
+                    for (f in mesh.faces) f.selected = (f === hit)
+                }
             }
         }
     }
@@ -1668,6 +1686,63 @@ class MyGLRenderer : GLSurfaceView.Renderer {
             EditSelectMode.VERTEX -> for (v in mesh.vertices) v.selected = true
             EditSelectMode.EDGE -> for (e in mesh.edges) e.selected = true
             EditSelectMode.FACE -> for (f in mesh.faces) f.selected = true
+        }
+    }
+
+    /**
+     * Modeling > Select > Box Select (ver MainActivity.armBoxSelect/onViewportDragEnd): selecciona
+     * todo lo que caiga dentro del rectangulo de pantalla [minX,maxX] x [minY,maxY], para el tipo
+     * de sub-elemento activo (mode) - mismo criterio de "flush" que usa Blender real segun el modo:
+     * - Vertex: el vertice cuenta si su proyeccion a pantalla cae dentro del rectangulo.
+     * - Edge: la arista cuenta solo si SUS DOS vertices caen dentro (no alcanza con que la
+     *   arista cruce el rectangulo sin que ambas puntas esten adentro - misma simplificacion que
+     *   ya usa Blender para Box Select, a diferencia de un clip real de segmento-rectangulo).
+     * - Face: la cara cuenta solo si TODOS sus vertices caen dentro.
+     * Sin extender (extend=false): antes de aplicar, deselecciona todo lo demas del tipo activo
+     * (mismo criterio que selectAllMeshElements/deselectAllMeshElements) - asi que arrastrar sobre
+     * espacio vacio limpia la seleccion, igual que un Box Select vacio en Blender. Con extend=true
+     * (ver MainActivity.extendSelectEnabled), suma a la seleccion existente sin tocar el resto.
+     * No hace nada si no hay objeto en Edit Mode.
+     */
+    fun selectMeshElementsInBox(minX: Float, minY: Float, maxX: Float, maxY: Float, mode: EditSelectMode, extend: Boolean) {
+        val obj = editingObject() ?: return
+        val mesh = obj.editableMesh ?: return
+        val model = objectModelMatrix(obj)
+
+        fun screenInBox(world: FloatArray): Boolean {
+            val s = projectWorldToScreen(world[0], world[1], world[2]) ?: return false
+            return s[0] in minX..maxX && s[1] in minY..maxY
+        }
+
+        when (mode) {
+            EditSelectMode.VERTEX -> {
+                if (!extend) for (v in mesh.vertices) v.selected = false
+                for (v in mesh.vertices) {
+                    if (screenInBox(localVertexToWorld(model, v))) v.selected = true
+                }
+            }
+            EditSelectMode.EDGE -> {
+                val vertexById = mesh.vertices.associateBy { it.id }
+                if (!extend) for (e in mesh.edges) e.selected = false
+                for (e in mesh.edges) {
+                    val v1 = vertexById[e.v1] ?: continue
+                    val v2 = vertexById[e.v2] ?: continue
+                    if (screenInBox(localVertexToWorld(model, v1)) && screenInBox(localVertexToWorld(model, v2))) {
+                        e.selected = true
+                    }
+                }
+            }
+            EditSelectMode.FACE -> {
+                val vertexById = mesh.vertices.associateBy { it.id }
+                if (!extend) for (f in mesh.faces) f.selected = false
+                for (f in mesh.faces) {
+                    val allIn = f.vertexIds.isNotEmpty() && f.vertexIds.all { id ->
+                        val v = vertexById[id] ?: return@all false
+                        screenInBox(localVertexToWorld(model, v))
+                    }
+                    if (allIn) f.selected = true
+                }
+            }
         }
     }
 
@@ -1764,9 +1839,9 @@ class MyGLRenderer : GLSurfaceView.Renderer {
      * Move (ver MainActivity.onViewportDragStart, que llama a hitTestGizmoAxis en ACTION_DOWN,
      * mismo hit-test que ya usa Object Mode).
      *
-     * SIMPLIFICACION CONOCIDA (TODO): el gizmo se dibuja en el ORIGEN DEL OBJETO (mismo pivote que
-     * Object Mode, ver onDrawFrame), no en el punto medio de los vertices seleccionados como hace
-     * Blender real. Para primitivas simetricas centradas en su origen (caso de Cube hoy) el efecto
+     * RESUELTO (ver gizmoPivotWorld, charla con el supervisor item 1 del roadmap): el gizmo ANTES
+     * se dibujaba en el ORIGEN DEL OBJETO (mismo pivote que Object Mode), no en el punto medio de
+     * los vertices seleccionados como hace Blender real. Para primitivas simetricas centradas en
      * practico es minimo, pero si mas adelante se edita una malla ya desplazada del origen, el
      * gizmo va a aparecer en un lugar distinto de donde esta la seleccion. Arreglarlo requiere
      * reposicionar el gizmo dibujado y su hit-test al centroide de la seleccion en vez del origen
@@ -1820,6 +1895,19 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         }
         if (count == 0) return null
         return floatArrayOf(sx / count, sy / count, sz / count)
+    }
+
+    /** Punto de pivote (mundo) para el gizmo: centro de la seleccion en Edit Mode (ver selectionCenterWorld), origen del objeto en Object Mode o si no hay nada seleccionado - unica fuente de verdad usada por onDrawFrame y los 3 hitTestGizmo*, ver charla con el supervisor (item 1 del roadmap). */
+    private fun gizmoPivotWorld(obj: SceneObject): FloatArray {
+        if (isEditMode) {
+            val mesh = obj.editableMesh
+            if (mesh != null) {
+                val vertexIds = verticesAffectedBySelection(mesh)
+                val center = selectionCenterWorld(obj, mesh, vertexIds)
+                if (center != null) return center
+            }
+        }
+        return floatArrayOf(obj.posX, obj.posY, obj.posZ)
     }
 
     /**
@@ -1905,8 +1993,8 @@ class MyGLRenderer : GLSurfaceView.Renderer {
      * rotateMeshVerticesAroundWorldAxis (vertice por vertice, alrededor del centro de la seleccion)
      * en vez de sobre la matriz acumulada del objeto entero.
      *
-     * SIMPLIFICACION CONOCIDA (mismo TODO que moveSelectedMeshElementsOnAxis): el anillo se dibuja
-     * y se toca en el ORIGEN DEL OBJETO, no en el centro real de la seleccion - solo afecta el
+     * RESUELTO (mismo fix que moveSelectedMeshElementsOnAxis): el anillo ahora se dibuja y se
+     * toca en el centro real de la seleccion (ver gizmoPivotWorld) - solo afecta el
      * calculo de CUANTO se arrastro, no ALREDEDOR DE QUE se rota (eso ya lo maneja
      * rotateMeshVerticesAroundWorldAxis con selectionCenterWorld).
      *
@@ -1918,7 +2006,7 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         val vertexIds = verticesAffectedBySelection(mesh)
         if (vertexIds.isEmpty()) return true
 
-        val center = floatArrayOf(obj.posX, obj.posY, obj.posZ)
+        val center = selectionCenterWorld(obj, mesh, vertexIds) ?: return true
         val radialDir = activeRotateCurrentDir ?: activeRotateStartDir ?: return true
         val axisDir = effectiveAxisDirection(axis, obj)
         val screenTangent = computeScreenTangentForRadialDir(center, axisDir, radialDir) ?: return true
@@ -2187,12 +2275,346 @@ class MyGLRenderer : GLSurfaceView.Renderer {
         return true
     }
 
+    /**
+     * Modeling > Mesh > Merge (At Center) - Fase 4 del plan de Edit Mode (ver charla con el
+     * supervisor): funde todos los vertices afectados por la seleccion actual (ver
+     * verticesAffectedBySelection - funciona sin importar el EditSelectMode activo, mismo criterio
+     * que moveSelectedMeshElements/rotateSelectedMeshElements/scaleSelectedMeshElements) en un solo
+     * vertice, ubicado en el punto promedio de todos ellos. Unico modo implementado por ahora - el
+     * resto de los modos de Blender (At Cursor/At First/At Last/Collapse) quedan pendientes, ver
+     * roadmap de Fase 4.
+     *
+     * Se elige como "sobreviviente" el de menor id (arbitrario pero determinista, mismo criterio
+     * de simplicidad que ya se uso en otros lados de la app) y se reescriben todas las aristas/
+     * caras que apuntaban a los otros vertices fundidos para que apunten a ese en su lugar
+     * (mapId). Despues de remapear:
+     * - Aristas degeneradas (v1 == v2, ambos extremos terminaron siendo el mismo vertice) se borran.
+     * - Aristas duplicadas (dos aristas distintas que ahora conectan el mismo par de vertices, ver
+     *   claves con minOf/maxOf - mismo criterio que edgeUsage en extrudeSelectedFaces) se colapsan
+     *   a una sola.
+     * - Caras se "limpian": se sacan ids consecutivos repetidos en el contorno (dos esquinas
+     *   seguidas que colapsaron al mismo vertice), preservando el orden; si a una cara le quedan
+     *   menos de 3 vertices unicos, o le queda algun id repetido no consecutivo (caso "bowtie",
+     *   dos esquinas opuestas fundidas), se borra entera - ya no forma una superficie valida.
+     *
+     * El vertice resultante queda seleccionado y el resto de la seleccion se limpia (mismo
+     * criterio que extrudeSelectedFaces: la seleccion despues de la operacion es la geometria
+     * resultante). Devuelve false (sin hacer nada) si no hay objeto en Edit Mode o si hay menos de
+     * 2 vertices afectados por la seleccion actual (no hay nada para fusionar) - el llamador
+     * (MainActivity) usa esto para avisar con un Toast, mismo criterio que deleteSelectedObject/
+     * extrudeSelectedFaces.
+     */
+    fun mergeSelectedVertices(): Boolean {
+        val obj = editingObject() ?: return false
+        val mesh = obj.editableMesh ?: return false
+        val affectedIds = verticesAffectedBySelection(mesh)
+        if (affectedIds.size < 2) return false
+
+        pushUndoSnapshot()
+
+        val vertexById = mesh.vertices.associateBy { it.id }
+        val affectedVerts = affectedIds.mapNotNull { vertexById[it] }
+        val cx = affectedVerts.sumOf { it.x.toDouble() }.toFloat() / affectedVerts.size
+        val cy = affectedVerts.sumOf { it.y.toDouble() }.toFloat() / affectedVerts.size
+        val cz = affectedVerts.sumOf { it.z.toDouble() }.toFloat() / affectedVerts.size
+
+        val targetId = affectedIds.min()
+        fun mapId(id: Int) = if (id in affectedIds) targetId else id
+
+        // Reasigna los extremos de cada arista al vertice sobreviviente.
+        for (i in mesh.edges.indices) {
+            val e = mesh.edges[i]
+            val nv1 = mapId(e.v1)
+            val nv2 = mapId(e.v2)
+            if (nv1 != e.v1 || nv2 != e.v2) mesh.edges[i] = e.copy(v1 = nv1, v2 = nv2)
+        }
+        mesh.edges.removeAll { it.v1 == it.v2 }
+        val seenEdgeKeys = HashSet<Long>()
+        val dedupedEdges = mutableListOf<MeshEdge>()
+        for (e in mesh.edges) {
+            val a = minOf(e.v1, e.v2)
+            val b = maxOf(e.v1, e.v2)
+            val key = a.toLong() * 1000000L + b
+            if (seenEdgeKeys.add(key)) dedupedEdges.add(e)
+        }
+        mesh.edges.clear()
+        mesh.edges.addAll(dedupedEdges)
+
+        // Reasigna y limpia el contorno de cada cara (colapsando repetidos consecutivos).
+        val newFaces = mutableListOf<MeshFace>()
+        for (f in mesh.faces) {
+            val remapped = f.vertexIds.map { mapId(it) }
+            val collapsed = mutableListOf<Int>()
+            for (id in remapped) {
+                if (collapsed.isEmpty() || collapsed.last() != id) collapsed.add(id)
+            }
+            if (collapsed.size > 1 && collapsed.first() == collapsed.last()) collapsed.removeAt(collapsed.size - 1)
+            if (collapsed.size >= 3 && collapsed.toSet().size == collapsed.size) {
+                newFaces.add(f.copy(vertexIds = collapsed))
+            }
+        }
+        mesh.faces.clear()
+        mesh.faces.addAll(newFaces)
+
+        // Borra los vertices fundidos (menos el sobreviviente), lo reubica en el centro y deja
+        // solo esa seleccion.
+        mesh.vertices.removeAll { it.id in affectedIds && it.id != targetId }
+        for (v in mesh.vertices) v.selected = false
+        for (e in mesh.edges) e.selected = false
+        for (f in mesh.faces) f.selected = false
+        mesh.vertices.firstOrNull { it.id == targetId }?.let {
+            it.x = cx
+            it.y = cy
+            it.z = cz
+            it.selected = true
+        }
+
+        refreshDynamicGeometry(obj)
+        return true
+    }
+
+    /**
+     * Modeling > Vertex > Bevel Vertices (tambien accesible desde el boton "Bevel" de la barra izquierda de Modeling) - Fase 4 del plan de Edit Mode: corta la esquina de cada vertice afectado por la seleccion actual (ver verticesAffectedBySelection), reemplazandolo por un vertice nuevo sobre cada arista incidente, ubicado a BEVEL_AMOUNT unidades de mundo del original (clampeado a 0.49 del largo de la arista). El orden de esos vertices nuevos alrededor del original se arma recorriendo las caras que tocan el vertice (cada una aporta un par vecino-anterior/vecino-siguiente en su contorno, encadenados en un abanico cerrado o abierto segun el vertice este rodeado de caras o en un borde). Cada cara que tocaba el vertice lo reemplaza en su contorno por sus dos vertices nuevos; si el abanico quedo cerrado (3+ caras), se agrega ademas la cara "tapa" del bisel. LIMITACION CONOCIDA: dos vertices seleccionados vecinos entre si no fusionan sus bordes de bisel en una sola cara achaflanada (Bevel Edges real de Blender) - queda pendiente. Devuelve false si no hay objeto en Edit Mode o nada seleccionado.
+     */
+    fun bevelSelectedVertices(): Boolean {
+        val obj = editingObject() ?: return false
+        val mesh = obj.editableMesh ?: return false
+        val affectedIds = verticesAffectedBySelection(mesh)
+        if (affectedIds.isEmpty()) return false
+
+        pushUndoSnapshot()
+
+        val vertexById = mesh.vertices.associateBy { it.id }
+        var nextVertexId = (mesh.vertices.maxOfOrNull { it.id } ?: -1) + 1
+        var nextEdgeId = (mesh.edges.maxOfOrNull { it.id } ?: -1) + 1
+        var nextFaceId = (mesh.faces.maxOfOrNull { it.id } ?: -1) + 1
+
+        for (v in mesh.vertices) v.selected = false
+        for (e in mesh.edges) e.selected = false
+        for (f in mesh.faces) f.selected = false
+
+        val newVertexForEdge = mutableMapOf<Pair<Int, Int>, Int>()
+        val fanNeighborsByVertex = mutableMapOf<Int, List<Int>>()
+        val fanClosedByVertex = mutableMapOf<Int, Boolean>()
+
+        for (vId in affectedIds) {
+            val neighborIds = mesh.edges.filter { it.v1 == vId || it.v2 == vId }
+                .map { if (it.v1 == vId) it.v2 else it.v1 }.toSet()
+            if (neighborIds.isEmpty()) continue
+
+            val nextNeighborOf = mutableMapOf<Int, Int>()
+            for (f in mesh.faces) {
+                val ids = f.vertexIds
+                val n = ids.size
+                val i = ids.indexOf(vId)
+                if (i == -1) continue
+                val prev = ids[(i - 1 + n) % n]
+                val next = ids[(i + 1) % n]
+                nextNeighborOf[prev] = next
+            }
+
+            val ordered = mutableListOf<Int>()
+            val visited = mutableSetOf<Int>()
+            val start = neighborIds.firstOrNull { it !in nextNeighborOf.values } ?: neighborIds.first()
+            var current: Int? = start
+            var closed = false
+            while (current != null && current !in visited) {
+                ordered.add(current)
+                visited.add(current)
+                val nxt = nextNeighborOf[current]
+                if (nxt == start) { closed = true; break }
+                current = nxt
+            }
+            fanNeighborsByVertex[vId] = ordered
+            fanClosedByVertex[vId] = closed
+
+            val vVertex = vertexById.getValue(vId)
+            for (neighborId in ordered) {
+                val neighborVertex = vertexById[neighborId] ?: continue
+                val dx = neighborVertex.x - vVertex.x
+                val dy = neighborVertex.y - vVertex.y
+                val dz = neighborVertex.z - vVertex.z
+                val len = sqrt(dx * dx + dy * dy + dz * dz)
+                val t = if (len > 1e-6f) (BEVEL_AMOUNT / len).coerceAtMost(0.49f) else 0.49f
+                val newId = nextVertexId++
+                mesh.vertices.add(MeshVertex(newId, vVertex.x + dx * t, vVertex.y + dy * t, vVertex.z + dz * t, selected = true))
+                newVertexForEdge[vId to neighborId] = newId
+            }
+        }
+
+        if (newVertexForEdge.isEmpty()) return false
+
+        for (i in mesh.edges.indices) {
+            val e = mesh.edges[i]
+            var v1 = e.v1
+            var v2 = e.v2
+            if (e.v1 in affectedIds) newVertexForEdge[e.v1 to e.v2]?.let { v1 = it }
+            if (e.v2 in affectedIds) newVertexForEdge[e.v2 to e.v1]?.let { v2 = it }
+            if (v1 != e.v1 || v2 != e.v2) mesh.edges[i] = e.copy(v1 = v1, v2 = v2, selected = true)
+        }
+
+        val newFacesBevel = mutableListOf<MeshFace>()
+        for (f in mesh.faces) {
+            val ids = f.vertexIds
+            val n = ids.size
+            var changed = false
+            val newLoop = mutableListOf<Int>()
+            for (i in ids.indices) {
+                val id = ids[i]
+                if (id in affectedIds) {
+                    changed = true
+                    val prev = ids[(i - 1 + n) % n]
+                    val next = ids[(i + 1) % n]
+                    newVertexForEdge[id to prev]?.let { newLoop.add(it) }
+                    newVertexForEdge[id to next]?.let { newLoop.add(it) }
+                } else {
+                    newLoop.add(id)
+                }
+            }
+            newFacesBevel.add(if (changed) MeshFace(f.id, newLoop, selected = true) else f.copy(selected = false))
+        }
+        mesh.faces.clear()
+        mesh.faces.addAll(newFacesBevel)
+
+        for (vId in affectedIds) {
+            val orderedNeighbors = fanNeighborsByVertex[vId] ?: continue
+            val closed = fanClosedByVertex[vId] ?: false
+            if (!closed || orderedNeighbors.size < 3) continue
+            val capIds = orderedNeighbors.mapNotNull { newVertexForEdge[vId to it] }
+            if (capIds.size < 3) continue
+            mesh.faces.add(MeshFace(nextFaceId++, capIds, selected = true))
+            for (i in capIds.indices) {
+                val a = capIds[i]
+                val b = capIds[(i + 1) % capIds.size]
+                mesh.edges.add(MeshEdge(nextEdgeId++, a, b, selected = true))
+            }
+        }
+
+        mesh.vertices.removeAll { it.id in affectedIds }
+
+        refreshDynamicGeometry(obj)
+        return true
+    }
+
+    /**
+     * Modeling > Edge > Subdivide - Fase 4 del plan de Edit Mode (ver charla con el supervisor):
+     * parte al medio cada arista "cortada" (ambos extremos afectados por la seleccion actual, ver
+     * verticesAffectedBySelection - mismo criterio de flush que usa mergeSelectedVertices, asi que
+     * funciona sin importar el EditSelectMode activo) e inserta un vertice nuevo en su punto medio.
+     *
+     * Reusa el mismo patron de extrudeSelectedFaces/mergeSelectedVertices (recolectar afectados,
+     * generar geometria nueva con ids incrementales, reescribir caras). Simplificacion deliberada
+     * para las caras afectadas (documentada, mismo criterio que la limitacion conocida de
+     * extrudeSelectedFaces):
+     * - Si TODAS las aristas del contorno de una cara quedaron cortadas, se agrega un vertice
+     *   central y la cara se reconstruye como un abanico de quads (punto medio anterior - vertice
+     *   original - punto medio siguiente - centro) - mismo resultado visual que Blender al
+     *   subdividir una cara entera.
+     * - Si solo ALGUNAS aristas de una cara quedaron cortadas, se inserta el punto medio nuevo
+     *   directo en el contorno de esa cara (sin triangular ni agregar centro) - la cara pasa a
+     *   tener mas vertices (n-gon), pero se mantiene como una sola superficie valida sin dejar
+     *   huecos ni geometria no-manifold. Blender en este caso arma un patron de triangulos mas
+     *   prolijo (ngon vs. fan real) - queda pendiente si hace falta mas adelante.
+     * - Si ninguna arista de una cara fue cortada, la cara queda intacta (se deselecciona, mismo
+     *   criterio que el resto de esta funcion: la seleccion final es SOLO la geometria nueva).
+     *
+     * Al terminar, la seleccion queda solo sobre la geometria nueva (puntos medios, centros y las
+     * caras/aristas que los usan) - mismo criterio que extrudeSelectedFaces/mergeSelectedVertices.
+     * Devuelve false (sin hacer nada) si no hay objeto en Edit Mode o si ninguna arista quedo
+     * cortada por la seleccion actual - el llamador (MainActivity) usa esto para avisar con un
+     * Toast, mismo criterio que el resto de las acciones de Fase 4.
+     */
+    fun subdivideSelected(): Boolean {
+        val obj = editingObject() ?: return false
+        val mesh = obj.editableMesh ?: return false
+        val affectedIds = verticesAffectedBySelection(mesh)
+        if (affectedIds.isEmpty()) return false
+        val cutEdges = mesh.edges.filter { it.v1 in affectedIds && it.v2 in affectedIds }
+        if (cutEdges.isEmpty()) return false
+
+        pushUndoSnapshot()
+
+        val vertexById = mesh.vertices.associateBy { it.id }
+        var nextVertexId = (mesh.vertices.maxOfOrNull { it.id } ?: -1) + 1
+        var nextEdgeId = (mesh.edges.maxOfOrNull { it.id } ?: -1) + 1
+        var nextFaceId = (mesh.faces.maxOfOrNull { it.id } ?: -1) + 1
+
+        for (v in mesh.vertices) v.selected = false
+        for (e in mesh.edges) e.selected = false
+        for (f in mesh.faces) f.selected = false
+
+        // Un punto medio nuevo por cada arista cortada (clave: par de vertices sin orden, mismo
+        // criterio que edgeUsage en extrudeSelectedFaces).
+        val midpointForEdge = mutableMapOf<Pair<Int, Int>, Int>()
+        for (e in cutEdges) {
+            val v1 = vertexById.getValue(e.v1)
+            val v2 = vertexById.getValue(e.v2)
+            val midId = nextVertexId++
+            mesh.vertices.add(MeshVertex(midId, (v1.x + v2.x) / 2f, (v1.y + v2.y) / 2f, (v1.z + v2.z) / 2f, selected = true))
+            val key = if (e.v1 < e.v2) e.v1 to e.v2 else e.v2 to e.v1
+            midpointForEdge[key] = midId
+        }
+        fun midOf(a: Int, b: Int): Int? = midpointForEdge[if (a < b) a to b else b to a]
+
+        // Cada arista cortada se reemplaza por dos aristas nuevas (extremo - punto medio).
+        val cutEdgeIds = cutEdges.map { it.id }.toSet()
+        mesh.edges.removeAll { it.id in cutEdgeIds }
+        for (e in cutEdges) {
+            val mid = midOf(e.v1, e.v2) ?: continue
+            mesh.edges.add(MeshEdge(nextEdgeId++, e.v1, mid, selected = true))
+            mesh.edges.add(MeshEdge(nextEdgeId++, mid, e.v2, selected = true))
+        }
+
+        // Reconstruye cada cara segun cuantas de sus aristas de contorno quedaron cortadas (ver
+        // los 3 casos documentados arriba).
+        val newFaces = mutableListOf<MeshFace>()
+        for (f in mesh.faces) {
+            val ids = f.vertexIds
+            val n = ids.size
+            val edgeMids = arrayOfNulls<Int>(n)
+            var cutCount = 0
+            for (i in 0 until n) {
+                val mid = midOf(ids[i], ids[(i + 1) % n])
+                edgeMids[i] = mid
+                if (mid != null) cutCount++
+            }
+            if (cutCount == 0) {
+                newFaces.add(f.copy(selected = false))
+                continue
+            }
+            if (cutCount == n) {
+                val cx = ids.sumOf { vertexById.getValue(it).x.toDouble() }.toFloat() / n
+                val cy = ids.sumOf { vertexById.getValue(it).y.toDouble() }.toFloat() / n
+                val cz = ids.sumOf { vertexById.getValue(it).z.toDouble() }.toFloat() / n
+                val centerId = nextVertexId++
+                mesh.vertices.add(MeshVertex(centerId, cx, cy, cz, selected = true))
+                for (i in 0 until n) {
+                    val mid = edgeMids[i] ?: continue
+                    mesh.edges.add(MeshEdge(nextEdgeId++, centerId, mid, selected = true))
+                }
+                for (i in 0 until n) {
+                    val a = ids[i]
+                    val midPrev = edgeMids[(i - 1 + n) % n] ?: continue
+                    val midNext = edgeMids[i] ?: continue
+                    newFaces.add(MeshFace(nextFaceId++, listOf(midPrev, a, midNext, centerId), selected = true))
+                }
+            } else {
+                val newLoop = mutableListOf<Int>()
+                for (i in 0 until n) {
+                    newLoop.add(ids[i])
+                    edgeMids[i]?.let { newLoop.add(it) }
+                }
+                newFaces.add(MeshFace(nextFaceId++, newLoop, selected = true))
+            }
+        }
+        mesh.faces.clear()
+        mesh.faces.addAll(newFaces)
+
+        refreshDynamicGeometry(obj)
+        return true
+    }
+
     fun convertSelectionOnModeChange(fromMode: EditSelectMode, toMode: EditSelectMode) {
-
-
-
-
-
         if (fromMode == toMode) return
         val mesh = editingObject()?.editableMesh ?: return
 
