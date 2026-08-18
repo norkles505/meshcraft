@@ -102,6 +102,51 @@ class MainActivity : Activity() {
     private var suppressNextTap: Boolean = false
     private lateinit var boxSelectOverlay: BoxSelectOverlayView
 
+    /**
+     * Circle Select (Modeling > Select > Circle Select, ver armCircleSelect): mismo criterio de
+     * estados que Box Select (circleSelectActive = "armado, esperando el primer arrastre",
+     * circleSelectDragging = arrastre en curso), pero el gesto es distinto - ACTION_DOWN fija el
+     * CENTRO (ver CircleSelectOverlayView.setCenter) y el radio se recalcula en cada ACTION_MOVE
+     * como la distancia centro-dedo (setRadiusToPoint), en vez de dos esquinas cualquiera.
+     */
+    private var circleSelectActive: Boolean = false
+    private var circleSelectDragging: Boolean = false
+    private var circleSelectCenterX: Float = 0f
+    private var circleSelectCenterY: Float = 0f
+    private var circleSelectRadius: Float = 0f
+    private lateinit var circleSelectOverlay: CircleSelectOverlayView
+
+    private var lassoSelectActive: Boolean = false
+    private var lassoSelectDragging: Boolean = false
+    private val lassoPoints = mutableListOf<FloatArray>()
+    private lateinit var lassoSelectOverlay: LassoSelectOverlayView
+
+    /**
+     * Knife (Modeling > Mesh > Knife, ver armKnifeTool/onKnifeTap): a diferencia de Box/Circle/
+     * Lasso Select (un solo arrastre) esto es TAP-based, dos toques - knifeActive queda en true
+     * mientras la herramienta esta "armada" esperando toques; knifeFirstEdge/knifeFirstT guardan
+     * el punto de entrada (primer toque) hasta que llega el segundo toque (punto de salida), que
+     * dispara el corte real (ver MyGLRenderer.knifeCutBetween) y desarma la herramienta sola,
+     * mismo criterio de "un solo gesto" que ya usan las otras herramientas de Select.
+     */
+    private var knifeActive: Boolean = false
+    private var knifeFirstEdge: MeshEdge? = null
+    private var knifeFirstT: Float = 0f
+
+    /**
+     * Poly Build (Modeling > barra izquierda > Poly Build, ver MyGLRenderer.polyBuildConnect):
+     * a diferencia de Knife (2 toques y se desarma sola), esto queda armado indefinidamente -
+     * polyBuildActive se apaga solo al elegir otra herramienta (ver setModelingTool), no despues
+     * de cada toque, para poder seguir construyendo una cadena de vertices/aristas sin tener que
+     * volver a tocar el boton entre uno y el siguiente (mismo espiritu que el Poly Build real de
+     * Blender: una tira continua). polyBuildAnchorVertex es el vertice "punta" de la cadena en
+     * este momento: null significa que todavia no se toco el primer vertice (el toque que sigue
+     * fija el punto de partida, ver onPolyBuildTap); una vez fijado, cada toque siguiente conecta
+     * desde ahi y el resultado (vertice existente o nuevo) pasa a ser el nuevo ancla.
+     */
+    private var polyBuildActive: Boolean = false
+    private var polyBuildAnchorVertex: Int? = null
+
     private var modeMenuPopup: PopupWindow? = null
 
     // Categorias del menu de cada modo (estilo Blender: View / Select / Add / Object).
@@ -369,6 +414,8 @@ class MainActivity : Activity() {
         gizmoView = GizmoView(this)
         gizmoLabelView = GizmoLabelView(this)
         boxSelectOverlay = BoxSelectOverlayView(this)
+        circleSelectOverlay = CircleSelectOverlayView(this)
+        lassoSelectOverlay = LassoSelectOverlayView(this)
 
         gizmoView.angleXProvider = { glView.renderer.angleX }
         gizmoView.angleYProvider = { glView.renderer.angleY }
@@ -391,6 +438,8 @@ class MainActivity : Activity() {
         val density = resources.displayMetrics.density
         root.addView(gizmoLabelView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         root.addView(boxSelectOverlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        root.addView(circleSelectOverlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        root.addView(lassoSelectOverlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         val gizmoSize = (68 * density).toInt()
         val margin = (16 * density).toInt()
         val gizmoParams = FrameLayout.LayoutParams(gizmoSize, gizmoSize)
@@ -776,10 +825,11 @@ class MainActivity : Activity() {
             armBoxSelect()
         })
         menuColumn.addView(buildSimpleMenuRow("Circle Select") {
-            renderModelingSelectSubmenu(menuColumn, popup, selectModeSubmenuItems)
+            popup.dismiss()
+            armCircleSelect()
         })
         menuColumn.addView(buildSimpleMenuRow("Lasso Select") {
-            renderModelingSelectSubmenu(menuColumn, popup, selectModeSubmenuItems)
+            popup.dismiss(); armLassoSelect()
         })
         addModelingSelectActionRow(menuColumn, popup, "Select Mirror")
         addModelingSelectActionRow(menuColumn, popup, "Select Random")
@@ -1420,6 +1470,54 @@ class MainActivity : Activity() {
             if (!beveled) Toast.makeText(this, "Selecciona al menos un vertice para biselar", Toast.LENGTH_SHORT).show()
             return
         }
+        if (action == "Loop Cut" || action == "Loop Cut and Slide") {
+            val cut = glView.renderer.loopCutSelectedEdges()
+            glView.requestRender()
+            if (!cut) Toast.makeText(this, "Selecciona una arista con caras cuadrangulares a los lados", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (action == "Shrink/Fatten") {
+            val shrunk = glView.renderer.shrinkFattenSelected()
+            glView.requestRender()
+            if (!shrunk) Toast.makeText(this, "Selecciona al menos un vertice con una cara adyacente", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (action == "Shear") {
+            val sheared = glView.renderer.shearSelected()
+            glView.requestRender()
+            if (!sheared) Toast.makeText(this, "Selecciona al menos un vertice", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (action == "Rip Region") {
+            val ripped = glView.renderer.ripSelectedFaces()
+            glView.requestRender()
+            if (!ripped) Toast.makeText(this, "Selecciona al menos una cara para separar", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (action == "Smooth" || action == "Smooth Vertices") {
+            val smoothed = glView.renderer.smoothSelectedVertices()
+            glView.requestRender()
+            if (!smoothed) Toast.makeText(this, "Selecciona al menos un vertice con vecinos", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (action == "Edge Slide") {
+            val slid = glView.renderer.slideSelectedEdges()
+            glView.requestRender()
+            if (!slid) Toast.makeText(this, "Selecciona una arista con una cara cuadrangular adyacente", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (action == "Inset Faces") {
+            val inset = glView.renderer.insetSelectedFaces()
+            glView.requestRender()
+            if (!inset) Toast.makeText(this, "Selecciona al menos una cara para insetear", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (action == "Spin") {
+            val spun = glView.renderer.spinSelected()
+            glView.requestRender()
+            if (!spun) Toast.makeText(this, "Selecciona al menos un vértice para revolucionar", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (action == "Subdivide") {
             val subdivided = glView.renderer.subdivideSelected()
             glView.requestRender()
@@ -1593,6 +1691,12 @@ class MainActivity : Activity() {
             val btn = createIconButton(entry.iconRes)
             if (entry.label == "Extrude Region") {
                 btn.setOnClickListener { onExtrudeRegionClicked() }
+            } else if (entry.label == "Knife") {
+                btn.setOnClickListener { armKnifeTool() }
+            } else if (entry.label == "Poly Build") {
+                btn.setOnClickListener { armPolyBuildTool() }
+            } else if (false) { // rama muerta sin efecto (condicion nunca verdadera) - limpieza pendiente
+                btn.setOnClickListener { onExtrudeRegionClicked() }
             } else {
                 btn.setOnClickListener { setModelingExtraTool(entry.label) }
             }
@@ -1613,6 +1717,8 @@ class MainActivity : Activity() {
     private fun setModelingTool(tool: LayoutTool) {
         currentModelingTool = tool
         currentModelingExtraTool = null
+        polyBuildActive = false
+        polyBuildAnchorVertex = null
         updateModelingToolHighlight()
         glView.renderer.gizmoMode = when (tool) {
             LayoutTool.MOVE -> GizmoMode.MOVE
@@ -1656,6 +1762,131 @@ class MainActivity : Activity() {
         setModelingTool(LayoutTool.SELECT)
         boxSelectActive = true
         Toast.makeText(this, "Arrastrá para seleccionar por caja", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Arma Circle Select (Modeling > Select > Circle Select): mismo criterio que armBoxSelect
+     * (fuerza la herramienta Select y prende el flag "activo", el primer toque que sigue fija el
+     * centro y el arrastre define el radio - ver onViewportDragStart/Move/End). A diferencia de
+     * Box Select, el gesto es centro + radio (ver CircleSelectOverlayView), no dos esquinas.
+     */
+    private fun armCircleSelect() {
+        if (currentMode != AppMode.MODELING) return
+        setModelingTool(LayoutTool.SELECT)
+        circleSelectActive = true
+        Toast.makeText(this, "Tocá para fijar el centro y arrastrá para el radio", Toast.LENGTH_SHORT).show()
+    }
+    private fun armLassoSelect() {
+        if (currentMode != AppMode.MODELING) return
+        setModelingTool(LayoutTool.SELECT)
+        lassoSelectActive = true
+        Toast.makeText(this, "Dibujá el contorno para seleccionar", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Arma Knife (Modeling > barra izquierda > Knife, ver charla con el usuario - version
+     * simplificada de 2 toques): fuerza la herramienta Select (mismo motivo que armBoxSelect - para
+     * que el proximo tap en el viewport no quede interceptado por Move/Rotate/Scale) y ademas
+     * resalta el boton propio de Knife (a diferencia de armBoxSelect/armCircleSelect/armLassoSelect,
+     * que no tienen boton en la barra y por eso terminan resaltando Select) - por eso pisa
+     * currentModelingExtraTool despues de llamar a setModelingTool (que lo resetea a null) y vuelve
+     * a actualizar el resaltado. knifeActive queda en true hasta que se completen los 2 toques (ver
+     * onKnifeTap) - recien ahi se desarma sola, mismo criterio "un solo gesto" que el resto de Fase 4.
+     */
+    private fun armKnifeTool() {
+        if (currentMode != AppMode.MODELING) return
+        setModelingTool(LayoutTool.SELECT)
+        currentModelingExtraTool = "Knife"
+        updateModelingToolHighlight()
+        knifeActive = true
+        knifeFirstEdge = null
+        Toast.makeText(this, "Tocá el punto de entrada del corte", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Toque en el viewport mientras Knife esta armado (ver armKnifeTool) - se llama desde
+     * onViewportTap ANTES de cualquier otra logica de tap, mientras knifeActive este en true.
+     * Primer toque: busca la arista mas cercana (ver MyGLRenderer.raycastEdgeAtWithT) y la guarda
+     * como punto de entrada. Segundo toque: busca la arista de salida y dispara el corte real (ver
+     * MyGLRenderer.knifeCutBetween) - exista o no una cara en comun entre ambas aristas, Knife se
+     * desarma solo despues de este segundo toque (mismo criterio que el resto de Fase 4: un intento
+     * fallido no dejar la herramienta "pegada" esperando indefinidamente).
+     */
+    private fun onKnifeTap(x: Float, y: Float) {
+        val hit = glView.renderer.raycastEdgeAtWithT(x, y)
+        if (hit == null) {
+            Toast.makeText(this, "Tocá más cerca de una arista", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val (edge, t) = hit
+        val firstEdge = knifeFirstEdge
+        if (firstEdge == null) {
+            knifeFirstEdge = edge
+            knifeFirstT = t
+            Toast.makeText(this, "Tocá el punto de salida del corte", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val cut = glView.renderer.knifeCutBetween(firstEdge, knifeFirstT, edge, t)
+        knifeActive = false
+        knifeFirstEdge = null
+        setModelingTool(LayoutTool.SELECT)
+        if (cut) {
+            glView.requestRender()
+        } else {
+            Toast.makeText(this, "Esas aristas no comparten una cara en comun", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * Arma Poly Build (Modeling > barra izquierda > Poly Build, ver MyGLRenderer.polyBuildConnect):
+     * mismo motivo que armKnifeTool para forzar la herramienta Select y resaltar su propio boton
+     * (pisa currentModelingExtraTool despues de setModelingTool, que lo resetea a null). A
+     * diferencia de Knife, NO se desarma sola despues de un toque - polyBuildActive queda en true
+     * indefinidamente para poder seguir construyendo una cadena (ver comentario de esa variable),
+     * hasta que el usuario elija otra herramienta (ver setModelingTool, que la apaga).
+     * polyBuildAnchorVertex arranca en null: el primer toque todavia no tiene desde donde conectar.
+     */
+    private fun armPolyBuildTool() {
+        if (currentMode != AppMode.MODELING) return
+        setModelingTool(LayoutTool.SELECT)
+        currentModelingExtraTool = "Poly Build"
+        updateModelingToolHighlight()
+        polyBuildActive = true
+        polyBuildAnchorVertex = null
+        Toast.makeText(this, "Tocá el vértice inicial de la cadena", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Toque en el viewport mientras Poly Build esta armado (ver armPolyBuildTool) - se llama desde
+     * onViewportTap, con la misma prioridad que onKnifeTap (antes que la seleccion normal).
+     * Sin ancla todavia (polyBuildAnchorVertex == null): el toque fija el PRIMER vertice de la
+     * cadena (ver MyGLRenderer.raycastVertexAt, mismo hit-test que Vertex select mode) - no crea
+     * nada nuevo, solo elige desde donde arrancar a construir. Si el toque no cae cerca de ningun
+     * vertice, avisa y no hace nada (la herramienta sigue armada, esperando otro intento).
+     * Con ancla ya fijada: cada toque llama a MyGLRenderer.polyBuildConnect, que conecta a un
+     * vertice existente o crea uno nuevo en espacio vacio (ver esa funcion) - el resultado pasa a
+     * ser el nuevo ancla, para poder seguir extendiendo la cadena con el proximo toque sin volver
+     * a tocar el boton (ver comentario de polyBuildActive).
+     */
+    private fun onPolyBuildTap(x: Float, y: Float) {
+        val anchor = polyBuildAnchorVertex
+        if (anchor == null) {
+            val hit = glView.renderer.raycastVertexAt(x, y)
+            if (hit == null) {
+                Toast.makeText(this, "Tocá más cerca de un vértice para empezar", Toast.LENGTH_SHORT).show()
+                return
+            }
+            polyBuildAnchorVertex = hit.id
+            Toast.makeText(this, "Tocá el siguiente punto para conectar", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val nextAnchor = glView.renderer.polyBuildConnect(anchor, x, y)
+        if (nextAnchor != null) {
+            polyBuildAnchorVertex = nextAnchor
+            glView.requestRender()
+        } else {
+            Toast.makeText(this, "No se pudo conectar ahí", Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** Herramienta "de un solo toque" (Extrude Region, Bevel, etc.) - queda resaltada hasta elegir otra. */
@@ -1803,6 +2034,21 @@ class MainActivity : Activity() {
             boxSelectOverlay.setRect(x, y, x, y)
             return
         }
+        if (circleSelectActive) {
+            circleSelectDragging = true
+            circleSelectCenterX = x
+            circleSelectCenterY = y
+            circleSelectRadius = 0f
+            circleSelectOverlay.setCenter(x, y)
+            return
+        }
+        if (lassoSelectActive) {
+            lassoSelectDragging = true
+            lassoPoints.clear()
+            lassoPoints.add(floatArrayOf(x, y))
+            lassoSelectOverlay.startPath(x, y)
+            return
+        }
         axisLocked = null
         if (currentMode == AppMode.MODELING) {
             if (currentModelingTool == LayoutTool.MOVE && glView.renderer.hasSelectedMeshElements()) {
@@ -1879,9 +2125,34 @@ class MainActivity : Activity() {
             glView.requestRender()
             return
         }
+        if (circleSelectDragging) {
+            circleSelectDragging = false
+            circleSelectActive = false
+            circleSelectOverlay.clear()
+            suppressNextTap = true
+            glView.renderer.selectMeshElementsInCircle(
+                circleSelectCenterX,
+                circleSelectCenterY,
+                circleSelectRadius,
+                currentEditSelectMode,
+                extendSelectEnabled
+            )
+            glView.requestRender()
+            return
+        }
         axisLocked = null
         glView.renderer.activeRotateAxis = null
         glView.renderer.activeMoveAxis = null
+        if (lassoSelectDragging) {
+            lassoSelectDragging = false
+            lassoSelectActive = false
+            lassoSelectOverlay.clear()
+            suppressNextTap = true
+            glView.renderer.selectMeshElementsInLasso(lassoPoints.toList(), currentEditSelectMode, extendSelectEnabled)
+            lassoPoints.clear()
+            glView.requestRender()
+            return
+        }
         glView.renderer.activeScaleAxis = null
         gizmoLabelView.labelText = null
         gizmoLabelView.invalidate()
@@ -1900,6 +2171,8 @@ class MainActivity : Activity() {
         }
         if (currentMode == AppMode.MODELING) {
             if (currentModelingTool == LayoutTool.SELECT) {
+                if (knifeActive) { onKnifeTap(x, y); return }
+                if (polyBuildActive) { onPolyBuildTap(x, y); return }
                 glView.renderer.selectMeshElementAt(x, y, currentEditSelectMode, extendSelectEnabled)
                 glView.requestRender()
             }
@@ -1938,6 +2211,18 @@ class MainActivity : Activity() {
             boxSelectCurrentX = x
             boxSelectCurrentY = y
             boxSelectOverlay.setRect(boxSelectStartX, boxSelectStartY, x, y)
+            return true
+        }
+        if (circleSelectDragging) {
+            circleSelectOverlay.setRadiusToPoint(x, y)
+            val dx0 = x - circleSelectCenterX
+            val dy0 = y - circleSelectCenterY
+            circleSelectRadius = kotlin.math.sqrt(dx0 * dx0 + dy0 * dy0)
+            return true
+        }
+        if (lassoSelectDragging) {
+            lassoPoints.add(floatArrayOf(x, y))
+            lassoSelectOverlay.addPoint(x, y)
             return true
         }
         if (currentMode == AppMode.MODELING) {
