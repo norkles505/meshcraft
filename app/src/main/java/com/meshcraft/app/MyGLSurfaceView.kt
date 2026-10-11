@@ -48,7 +48,7 @@ class MyGLSurfaceView(context: Context) : GLSurfaceView(context) {
 
     init {
         setEGLContextClientVersion(2)
-        renderer = MyGLRenderer()
+        renderer = MyGLRenderer(context)
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }

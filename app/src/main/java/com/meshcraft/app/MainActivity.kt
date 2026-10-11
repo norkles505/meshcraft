@@ -34,6 +34,8 @@ class MainActivity : Activity() {
     private lateinit var lockButton: ImageView
 
     private lateinit var fileButton: ImageView
+    private lateinit var generalButton: ImageView
+    private lateinit var dataButton: ImageView
     private lateinit var layoutTab: ImageView
     private lateinit var modelingTab: ImageView
     private lateinit var uvEditingTab: ImageView
@@ -532,8 +534,20 @@ class MainActivity : Activity() {
         modelingTab.setOnClickListener { onModeTabClicked(AppMode.MODELING, modelingTab) }
         uvEditingTab.setOnClickListener { onModeTabClicked(AppMode.UV_EDITING, uvEditingTab) }
 
+        // General / Data: no son un AppMode mas (no cambian herramientas ni gizmo, ver charla con
+        // el usuario) - dos botones independientes, mismo estilo que los tabs de modo, que abren
+        // su propio popup (mismo patron que showFileMenu). Por ahora solo "Proximamente"
+        // (renderPendingSubmenu) - el plan acordado para cuando se retome esto es sumar el
+        // Outliner (lista de objetos) y un tab Object con transform numerico como primer
+        // contenido real, ya que ninguno de los dos depende de sistemas todavia sin construir
+        // (a diferencia de Modifier/Material/Data de malla, que si).
+        generalButton = createIconButton(R.drawable.ic_general)
+        dataButton = createIconButton(R.drawable.ic_data)
+        generalButton.setOnClickListener { showGeneralOrDataMenu(it, "General") }
+        dataButton.setOnClickListener { showGeneralOrDataMenu(it, "Data") }
+
         val spacing = (8 * density).toInt()
-        for (tab in listOf(layoutTab, modelingTab, uvEditingTab)) {
+        for (tab in listOf(layoutTab, modelingTab, uvEditingTab, generalButton, dataButton)) {
             (tab.layoutParams as LinearLayout.LayoutParams).leftMargin = spacing
             tabsRow.addView(tab)
         }
@@ -1553,6 +1567,21 @@ class MainActivity : Activity() {
                 glView.requestRender()
                 if (!hadSelection) Toast.makeText(this, "No hay objeto seleccionado", Toast.LENGTH_SHORT).show()
             }
+            "Show/Hide" -> {
+                val didSomething = glView.renderer.toggleShowHideSelected()
+                glView.requestRender()
+                if (!didSomething) Toast.makeText(this, "No hay objeto seleccionado ni oculto", Toast.LENGTH_SHORT).show()
+            }
+            "Set Origin" -> {
+                val hadSelection = glView.renderer.setOriginToGeometrySelected()
+                glView.requestRender()
+                if (!hadSelection) Toast.makeText(this, "No hay objeto seleccionado", Toast.LENGTH_SHORT).show()
+            }
+            "Apply" -> {
+                val hadSelection = glView.renderer.applySelectedObjectTransform()
+                glView.requestRender()
+                if (!hadSelection) Toast.makeText(this, "No hay objeto seleccionado", Toast.LENGTH_SHORT).show()
+            }
             "Clear" -> {
                 val hadSelection = glView.renderer.clearSelectedObjectTransform()
                 glView.requestRender()
@@ -2319,6 +2348,41 @@ class MainActivity : Activity() {
         uvEditingTab.background = circleBackground(currentMode == AppMode.UV_EDITING)
     }
 
+    /**
+     * Popup de General/Data (ver charla con el usuario): mismo patron que showFileMenu (icono
+     * propio resaltado mientras esta abierto, PopupWindow con fondo redondeado), pero el
+     * contenido por ahora es solo "Proximamente" (reusa renderPendingSubmenu) - todavia no hay
+     * Outliner ni tabs de Properties implementados. onBack cierra el popup directo en vez de
+     * volver a una lista de categorias (no hay "adentro" al que volver todavia).
+     */
+    private fun showGeneralOrDataMenu(anchor: View, label: String) {
+        val density = resources.displayMetrics.density
+        val menuColumn = LinearLayout(this)
+        menuColumn.orientation = LinearLayout.VERTICAL
+        menuColumn.background = menuBackground()
+        val vPad = (6 * density).toInt()
+        menuColumn.setPadding(vPad, vPad, vPad, vPad)
+
+        val targetButton = if (label == "General") generalButton else dataButton
+        targetButton.background = circleBackground(true)
+
+        val popup = PopupWindow(
+            menuColumn,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            true
+        )
+        popup.isOutsideTouchable = true
+        popup.elevation = 12 * density
+        popup.setOnDismissListener {
+            targetButton.background = circleBackground(false)
+        }
+
+        menuColumn.addView(buildSimpleMenuRow("Próximamente") { })
+
+        popup.showAsDropDown(anchor, 0, (8 * density).toInt())
+    }
+
     private fun showFileMenu(anchor: View) {
         val density = resources.displayMetrics.density
         val menuColumn = LinearLayout(this)
@@ -2398,7 +2462,25 @@ class MainActivity : Activity() {
         return row
     }
 
+    /**
+     * File > New/Save (ver MyGLRenderer.newProject/saveProjectToFile - un solo slot fijo, con
+     * auto-carga al abrir la app, ver charla con el usuario): Import/Export siguen cayendo al
+     * fallback Toast de abajo a proposito (dependen de un parser/exportador de formato externo,
+     * fuera de alcance por ahora - ver esa misma charla).
+     */
     private fun onFileMenuAction(action: String) {
+        if (action == "New") {
+            glView.renderer.newProject()
+            onViewportDragEnd()
+            glView.requestRender()
+            Toast.makeText(this, "Nuevo proyecto", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (action == "Save") {
+            val saved = glView.renderer.saveProjectToFile()
+            Toast.makeText(this, if (saved) "Proyecto guardado" else "No se pudo guardar", Toast.LENGTH_SHORT).show()
+            return
+        }
         // TODO: reemplazar por la logica real de New/Save/Import/Export una vez definido el formato de proyecto.
         Toast.makeText(this, action, Toast.LENGTH_SHORT).show()
     }
